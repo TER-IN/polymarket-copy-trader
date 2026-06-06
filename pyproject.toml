@@ -1,0 +1,59 @@
+[project]
+name = "polymarket-copy-trader"
+version = "0.1.0"
+description = "Local dry-run-first Polymarket copy-trading monitor."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic>=2.7",
+  "pydantic-settings>=2.2",
+  "python-dotenv>=1.0",
+  "requests>=2.32",
+  "tenacity>=8.3",
+  "typer>=0.12",
+  "rich>=13.7",
+  "fastapi>=0.111",
+  "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+live = ["py-clob-client>=0.22.0"]
+ws = ["websockets>=12.0"]
+dev = ["pytest>=8.2"]
+
+[project.scripts]
+pct = "cli:app"
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = [
+  "cli",
+  "config",
+  "models",
+  "db",
+  "polymarket_data",
+  "polymarket_gamma",
+  "polymarket_pnl",
+  "polymarket_clob",
+  "ingestion",
+  "decision_engine",
+  "crowding",
+  "dashboard",
+  "execution",
+  "funds",
+  "positions",
+  "redemption",
+  "resolution",
+  "settlement_audit",
+  "websocket_ingestion",
+]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
