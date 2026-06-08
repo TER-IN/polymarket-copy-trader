@@ -26,6 +26,23 @@ class OutcomeToken:
     outcome: str
 
 
+@dataclass(frozen=True)
+class MarketMetadata:
+    start_time: datetime | None
+    end_time: datetime | None
+    up_down_tokens: tuple[OutcomeToken, OutcomeToken] | None
+    fee_rate: float
+    fee_exponent: float
+    taker_only_fee: bool
+    raw_payload: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def duration_seconds(self) -> float | None:
+        if not self.start_time or not self.end_time:
+            return None
+        return (self.end_time - self.start_time).total_seconds()
+
+
 class GammaClient:
     def __init__(
         self,
@@ -65,11 +82,44 @@ class GammaClient:
         payload = self._find_market(market_id, asset_id, condition_id)
         if not payload:
             return None
-        value = payload.get("endDate") or payload.get("endDateIso") or payload.get("end_date_iso")
-        if not value:
+        return _parse_datetime(payload.get("endDate") or payload.get("endDateIso") or payload.get("end_date_iso"))
+
+    def get_market_metadata(
+        self,
+        market_id: str,
+        asset_id: str,
+        condition_id: str | None = None,
+    ) -> MarketMetadata | None:
+        payload = self._find_market(market_id, asset_id, condition_id)
+        if not payload:
             return None
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        return parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        fee_schedule = payload.get("feeSchedule") or payload.get("fee_schedule") or {}
+        if not isinstance(fee_schedule, dict):
+            fee_schedule = {}
+        raw_rate = fee_schedule.get("rate", fee_schedule.get("r", 0))
+        raw_exponent = fee_schedule.get("exponent", fee_schedule.get("e", 1))
+        rate = max(0.0, _to_float(raw_rate) or 0.0)
+        if rate > 1:
+            rate /= 10_000.0
+        return MarketMetadata(
+            start_time=_parse_datetime(
+                payload.get("eventStartTime")
+                or payload.get("event_start_time")
+                or payload.get("gameStartTime")
+                or payload.get("game_start_time")
+                or payload.get("startDate")
+                or payload.get("startDateIso")
+                or payload.get("start_date_iso")
+            ),
+            end_time=_parse_datetime(
+                payload.get("endDate") or payload.get("endDateIso") or payload.get("end_date_iso")
+            ),
+            up_down_tokens=_up_down_tokens_from_gamma(payload),
+            fee_rate=rate,
+            fee_exponent=max(0.0, _to_float(raw_exponent) or 1.0),
+            taker_only_fee=bool(fee_schedule.get("takerOnly", fee_schedule.get("to", True))),
+            raw_payload=payload,
+        )
 
     def get_up_down_tokens(
         self,
@@ -267,3 +317,10 @@ def _looks_like_condition_id(value: str | None) -> bool:
         return False
     text = str(value)
     return text.startswith("0x") and len(text) > 20
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    return parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)

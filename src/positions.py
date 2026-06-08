@@ -11,15 +11,16 @@ def apply_buy(
     shares: float,
     price: float,
     source_wallet: str,
+    fee_usd: float = 0.0,
 ) -> CopiedPosition:
-    cost = shares * price
+    cost = shares * price + max(0.0, fee_usd)
     if existing is None:
         return CopiedPosition(
             market_id=market_id,
             asset_id=asset_id,
             outcome=outcome,
             total_shares=shares,
-            avg_entry_price=price,
+            avg_entry_price=cost / shares if shares else 0.0,
             total_cost=cost,
             source_wallets={source_wallet},
         )
@@ -33,11 +34,11 @@ def apply_buy(
     return existing
 
 
-def apply_sell(existing: CopiedPosition, shares: float, price: float) -> CopiedPosition:
+def apply_sell(existing: CopiedPosition, shares: float, price: float, fee_usd: float = 0.0) -> CopiedPosition:
     sell_shares = min(shares, existing.total_shares)
     proceeds = sell_shares * price
     cost_basis = sell_shares * existing.avg_entry_price
-    existing.realized_pnl += proceeds - cost_basis
+    existing.realized_pnl += proceeds - cost_basis - max(0.0, fee_usd)
     existing.total_shares -= sell_shares
     existing.total_cost = max(0.0, existing.total_shares * existing.avg_entry_price)
     if existing.total_shares <= 1e-9:

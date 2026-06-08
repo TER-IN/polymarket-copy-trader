@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
@@ -63,6 +63,12 @@ def summary() -> dict[str, Any]:
             "max_slippage_cents": settings.max_slippage_cents,
             "max_buy_price": settings.max_buy_price,
             "max_seconds_until_market_end": settings.max_seconds_until_market_end,
+            "market_type_filter": settings.market_type_filter.value,
+            "up_down_min_duration_seconds": settings.up_down_min_duration_seconds,
+            "up_down_max_duration_seconds": settings.up_down_max_duration_seconds,
+            "min_net_upside_usd": settings.min_net_upside_usd,
+            "min_net_upside_percent": settings.min_net_upside_percent,
+            "allow_market_title_keywords": settings.allow_market_title_keywords,
             "dry_run_starting_balance_usd": settings.dry_run_starting_balance_usd,
             "outcome_selection_mode": settings.outcome_selection_mode.value,
             "daily_spend_cap_usd": settings.daily_spend_cap_usd,
@@ -187,21 +193,39 @@ def _position_rows(db: Database, clob_client: PublicClobClient) -> tuple[list[di
     rows: list[dict[str, Any]] = []
     total_cost = 0.0
     total_value = 0.0
+    total_unrealized = 0.0
     total_realized = 0.0
+    pending_valuation_cost = 0.0
 
     for row in db.position_dashboard_rows():
         quote = _safe_quote(clob_client, row["asset_id"]) if row["status"] == "open" else {}
         bid = quote.get("best_bid")
+        display_status = row["status"]
+        if (
+            row["status"] == "open"
+            and _market_has_ended(row["market_end_time"])
+            and row["resolution_resolved"] != 1
+        ):
+            display_status = "awaiting_resolution"
+
         if row["status"] == "redeem_required":
             est_value = row["total_shares"]
             unrealized = est_value - row["total_cost"]
+        elif row["status"] == "open" and bid is not None:
+            est_value = row["total_shares"] * bid
+            unrealized = est_value - row["total_cost"]
         else:
-            est_value = row["total_shares"] * bid if bid is not None else 0.0
-            unrealized = est_value - row["total_cost"] if row["status"] == "open" else 0.0
+            est_value = None if row["status"] == "open" else 0.0
+            unrealized = None if row["status"] == "open" else 0.0
         realized = float(row["realized_pnl"] or 0)
-        total = unrealized + realized
+        total = unrealized + realized if unrealized is not None else None
         total_cost += float(row["total_cost"])
-        total_value += est_value or 0.0
+        if est_value is not None:
+            total_value += est_value
+        if unrealized is not None:
+            total_unrealized += unrealized
+        elif row["status"] == "open":
+            pending_valuation_cost += float(row["total_cost"])
         total_realized += realized
 
         rows.append(
@@ -218,7 +242,9 @@ def _position_rows(db: Database, clob_client: PublicClobClient) -> tuple[list[di
                 "unrealized": unrealized,
                 "realized": realized,
                 "total": total,
-                "status": row["status"],
+                "status": display_status,
+                "market_end_time": row["market_end_time"],
+                "resolution_checked_at": row["resolution_checked_at"],
                 "market_title": row["market_title"] or row["market_id"],
                 "market_url": _polymarket_market_url(row["event_slug"]),
             }
@@ -227,10 +253,23 @@ def _position_rows(db: Database, clob_client: PublicClobClient) -> tuple[list[di
     return rows, {
         "cost": total_cost,
         "est_value": total_value,
-        "unrealized": total_value - total_cost,
+        "unrealized": total_unrealized,
         "realized": total_realized,
-        "total": total_value - total_cost + total_realized,
+        "total": total_unrealized + total_realized,
+        "pending_valuation_cost": pending_valuation_cost,
     }
+
+
+def _market_has_ended(value: Any) -> bool:
+    if not value:
+        return False
+    try:
+        end_time = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if end_time.tzinfo is None:
+        end_time = end_time.replace(tzinfo=timezone.utc)
+    return end_time <= utc_now()
 
 
 def _copied_order_rows(db: Database, clob_client: PublicClobClient) -> list[dict[str, Any]]:
@@ -245,9 +284,10 @@ def _copied_order_rows(db: Database, clob_client: PublicClobClient) -> list[dict
         diff = our_price - reference_price if our_price is not None and reference_price is not None else None
         mtm_pnl = None
         if bid is not None and data.get("source_side") == TradeSide.BUY.value and our_price is not None:
-            requested_shares = data.get("requested_shares")
-            if requested_shares is not None:
-                mtm_pnl = (bid - our_price) * requested_shares
+            shares = data.get("filled_shares") or data.get("requested_shares")
+            if shares is not None:
+                fee = data.get("actual_fee_usd") or data.get("estimated_fee_usd") or 0
+                mtm_pnl = (bid - our_price) * shares - fee
         data.update(
             {
                 "our_price": our_price,
@@ -1045,6 +1085,9 @@ HTML = """
       if (totals.available_cash !== null && totals.available_cash !== undefined) {
         items.push(["Available cash", totals.available_cash]);
       }
+      if (totals.pending_valuation_cost > 0) {
+        items.push(["Awaiting valuation", totals.pending_valuation_cost]);
+      }
       document.getElementById("metrics").innerHTML = items.map(([label, value, cls]) => `
         <div class="metric">
           <label>${fmt.text(label)}</label>
@@ -1094,6 +1137,7 @@ HTML = """
         ${num(row.settlement_count, value => value)}
         ${num(row.settlement_payout)}
         ${num(row.settlement_pnl, fmt.money, pnlClass(row.settlement_pnl))}
+        ${num(row.fees)}
         ${num(row.net_cashflow, fmt.money, pnlClass(row.net_cashflow))}
       </tr>`);
       document.getElementById("our-performance").innerHTML = `
@@ -1105,7 +1149,8 @@ HTML = """
             {label: "date"}, {label: "buys", cls: "num"}, {label: "buy spend", cls: "num"},
             {label: "sells", cls: "num"}, {label: "sell notional", cls: "num"},
             {label: "settlements", cls: "num"}, {label: "settlement payout", cls: "num"},
-            {label: "settlement pnl", cls: "num"}, {label: "cashflow", cls: "num"}
+            {label: "settlement pnl", cls: "num"}, {label: "fees", cls: "num"},
+            {label: "cashflow", cls: "num"}
           ],
           rows,
           "No local performance rows yet."
@@ -1299,6 +1344,7 @@ HTML = """
         ${num(row.source_notional_usd)}
         ${num(row.requested_notional_usd)}
         ${num(row.requested_shares, fmt.shares)}
+        ${num((row.actual_fee_usd || row.estimated_fee_usd || 0))}
         ${num(row.bid, fmt.price)}
         ${num(row.our_mtm_pnl, fmt.money, pnlClass(row.our_mtm_pnl))}
         <td class="market">${fmt.text(row.market_title)}</td>
@@ -1311,7 +1357,8 @@ HTML = """
           {label: "our px", cls: "num"},
           {label: "diff", cls: "num"}, {label: "source $", cls: "num"},
           {label: "our $", cls: "num"}, {label: "our shares", cls: "num"},
-          {label: "bid", cls: "num"}, {label: "our mtm pnl", cls: "num"}, {label: "market"}
+          {label: "fee", cls: "num"}, {label: "bid", cls: "num"},
+          {label: "our mtm pnl", cls: "num"}, {label: "market"}
         ],
         rows,
         "No copied orders yet."

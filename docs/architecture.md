@@ -36,7 +36,19 @@ Live trading requires:
 
 The live executor uses marketable limit orders with FAK behavior. Market orders on Polymarket are represented as marketable limit orders, so slippage limits are enforced before submission.
 
-`STOP_TRADING` is checked at the execution boundary. It blocks new dry-run and live BUY/SELL orders without stopping polling or resolution scanning, and it does not cancel already-submitted live orders. Observed trades are still deduplicated and blocked orders are not retried. The current ingestion flow also advances source-token lifecycle state after a blocked execution, so repeated stop/resume cycles can desynchronize source lifecycle state from copied positions.
+`STOP_TRADING` is checked at the execution boundary. It blocks new dry-run and live BUY/SELL orders without stopping polling or resolution scanning, and it does not cancel already-submitted live orders. Observed trades are still deduplicated and blocked orders are not retried, but blocked executions do not advance source-token lifecycle state.
+
+Copy decisions walk visible CLOB depth up to the slippage and absolute-price limit. The average price, worst price, levels, fill ratio, market metadata, fee rate, and estimated fee are stored with the decision/order snapshot. Dry-run positions use fee-inclusive cost basis. Live FAK orders receive one immediate authenticated status reconciliation when possible.
+
+The optional market-title allowlist performs case-insensitive substring matching on BUY decisions only. SELL decisions bypass it so configuration changes cannot strand an existing copied position. The active allowlist is stored in each decision's strategy snapshot.
+
+Short-duration filtering measures `eventStartTime` to `endDate`. Gamma's `startDate` is the market creation/listing time and is used only as a fallback when no event start is available.
+
+`target_trades.observed_at` and structured decision timing preserve polling and processing latency at sub-second precision. Every decision embeds the active strategy thresholds. `market_resolution_observations` stores authoritative token payout maps for all evaluated markets that have an advertised end time, not only markets with copied positions, so rejected decisions can be analyzed counterfactually.
+
+Live resolution scanning does not sign redemption transactions. Winning positions become `redeem_required`; losses can be accounted immediately from authoritative resolution metadata.
+
+Resolution state is determined from authoritative token payouts, not from a missing order book or a price near zero or one. Because the public API can lag the website after a market ends, the dashboard exposes `awaiting_resolution` and leaves bidless valuation fields unknown until a payout is available.
 
 ## Data Limits
 

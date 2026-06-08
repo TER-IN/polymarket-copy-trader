@@ -55,6 +55,35 @@ def test_position_dashboard_rows_include_event_slug(tmp_path) -> None:
     assert row["event_slug"] == "eth-updown-5m-1780776900"
 
 
+def test_position_dashboard_rows_include_resolution_state(tmp_path) -> None:
+    from positions import apply_buy
+
+    db = Database(tmp_path / "db.sqlite3")
+    trade = make_trade()
+    db.insert_trade(trade)
+    db.record_copy_decision(
+        trade,
+        True,
+        "copy allowed",
+        {"market_end_time": "2026-06-08T15:00:00+00:00"},
+    )
+    db.record_order(trade.dedupe_key, trade, 5, 10, 0.5, "dry_run")
+    db.upsert_position(apply_buy(None, "m1", "tok1", "Yes", 10, 0.5, "0xabc"))
+    db.record_market_resolution_observation(
+        "m1",
+        False,
+        {},
+        "Market",
+        {"closed": False},
+    )
+
+    row = db.position_dashboard_rows()[0]
+
+    assert row["market_end_time"] == "2026-06-08T15:00:00+00:00"
+    assert row["resolution_resolved"] == 0
+    assert row["resolution_checked_at"] is not None
+
+
 def test_freeze_source_token_preserves_original_reason(tmp_path) -> None:
     db = Database(tmp_path / "db.sqlite3")
     trade = make_trade()
@@ -98,6 +127,24 @@ def test_simulated_cash_balance_tracks_buys_sells_and_settlements(tmp_path) -> N
         )
 
     assert db.simulated_cash_balance(100) == 96
+
+
+def test_simulated_cash_balance_accounts_for_fees_and_filled_notional(tmp_path) -> None:
+    db = Database(tmp_path / "db.sqlite3")
+    buy = make_trade(size=20, price=0.5)
+    db.record_order(
+        buy.dedupe_key,
+        buy,
+        10,
+        20,
+        0.5,
+        "dry_run",
+        filled_shares=10,
+        filled_notional_usd=5,
+        estimated_fee_usd=0.25,
+    )
+
+    assert db.simulated_cash_balance(100) == 94.75
 
 
 def test_redemption_settles_open_position(tmp_path) -> None:

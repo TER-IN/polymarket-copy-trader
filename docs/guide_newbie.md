@@ -564,7 +564,21 @@ The dashboard's `Positions` tab shows your local copied position per market/outc
 
 Important: `bid`, `ask`, `est value`, and `unrealized` are estimates. A visible bid can disappear, a market can be thin, and a real live wallet may differ from local bot accounting if an order partially fills, fails, or is manually changed outside the bot.
 
-Dry-run execution also uses the current best quote for the entire simulated copy amount. It does not yet walk order-book depth or model partial FAK fills. In thin markets, simulated shares and profit can therefore be optimistic even when the final winning outcome is evaluated correctly.
+After a market's advertised end, Polymarket's website may show an outcome before the public API publishes the authoritative token payout. The dashboard labels this temporary state `awaiting_resolution`. If no bid exists, estimated value and PnL stay blank instead of showing a misleading full loss. The default resolution scan interval is 60 seconds.
+
+Dry-run execution walks the visible order book only through levels allowed by the slippage and maximum-buy-price limits. It records partial FAK-style fills, the average and worst execution prices, and an estimated market fee. The simulation still cannot guarantee that the displayed liquidity would remain available long enough for a real order to consume it.
+
+For later debugging and strategy comparison, the database also keeps:
+
+- the exact strategy settings used for every decision,
+- source-trade, observation, and completed-decision timestamps,
+- polling delay and decision-processing duration,
+- complete decision-time market metadata and visible order book,
+- simulated depth fills and fee calculations,
+- structured rejection reasons,
+- authoritative payout maps after evaluated markets resolve, including rejected trades.
+
+Use a fresh `DATABASE_URL` filename for a clean experiment. Reusing an older database is supported, but old positions, spending, and decisions remain part of local accounting and can make comparison harder.
 
 ## 14. Mark-to-Market PnL
 
@@ -776,7 +790,7 @@ If `STOP_TRADING` exists, the project blocks new dry-run and live BUY/SELL order
 
 Trades observed while the stop file exists are stored with copied-order status `blocked` and are not retried after trading is enabled again.
 
-Current limitation: the bot still advances its tracked source-token lifecycle for a blocked trade even though no copied order was executed. This can make a later stop/resume sequence disagree with the local copied position. Use this mechanism as an emergency stop for the current run, not as a routine pause/resume control.
+Blocked trades do not advance the tracked source-token lifecycle. They are still deduplicated and are not replayed when the file is removed.
 
 Remove it only when you intentionally want to allow trading again:
 
@@ -864,7 +878,26 @@ Maximum worse price versus the target's entry.
 DAILY_SPEND_CAP_USD=100
 ```
 
-Local daily cap for copied buys.
+Local daily cap for copied buys, including estimated fees. Leave it empty or use `none`/`unlimited` to disable this cap while retaining the available-balance and exposure limits.
+
+```env
+MARKET_TYPE_FILTER=short_duration_up_down
+UP_DOWN_MIN_DURATION_SECONDS=300
+UP_DOWN_MAX_DURATION_SECONDS=900
+```
+
+Optionally restrict copied buys to authoritative short-duration `Up`/`Down` markets.
+
+Duration is measured from Polymarket's `eventStartTime` to `endDate`. The earlier market creation/listing timestamp is not treated as the prediction window.
+
+```env
+MIN_NET_UPSIDE_USD=1
+MIN_NET_UPSIDE_PERCENT=5
+NET_UPSIDE_SAFETY_MARGIN_USD=0.25
+INCLUDE_EXIT_FEE_IN_UPSIDE=false
+```
+
+Optionally reject buys whose maximum payout advantage is too small after visible book depth, entry fee, and the safety margin. Enable the exit-fee option only when you expect to sell before resolution.
 
 ```env
 PER_MARKET_EXPOSURE_CAP_USD=50
@@ -893,6 +926,17 @@ Skip or avoid trades that appear too crowded.
 ```env
 BLOCK_MARKET_KEYWORDS=sports,election
 ```
+
+To allow new buys only for markets whose titles contain at least one configured
+substring, use:
+
+```env
+ALLOW_MARKET_TITLE_KEYWORDS=bitcoin,ethereum
+```
+
+Matching is case-insensitive and uses OR logic. An empty value disables this
+allowlist. It applies only to BUYs so copied SELLs can still reduce existing
+positions.
 
 Optional title keywords to avoid.
 

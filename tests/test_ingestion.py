@@ -8,6 +8,7 @@ from decision_engine import DecisionEngine
 from execution import Executor
 from ingestion import PollingIngestor
 from models import OutcomeSelectionMode, TradeEvent, TradeSide
+from models import CopyDecision, ExecutionResult
 from outcome_selection import OutcomeSelector
 from polymarket_clob import BookQuote
 from polymarket_gamma import OutcomeToken
@@ -184,3 +185,54 @@ def test_inverse_mode_records_strict_pair_rejection(tmp_path) -> None:
     assert "authoritative two-outcome Up/Down pair" in state["freeze_reason"]
     decision = db.source_token_states()[0]
     assert '"outcome_selection_mode": "inverse_up_down"' in decision["decision_details"]
+
+
+def test_stop_block_does_not_advance_source_lifecycle(tmp_path) -> None:
+    class AllowDecision:
+        def decide(self, trade, crowding_score=None, source_trade=None):
+            return CopyDecision(True, "ok", copy_notional_usd=10, copy_shares=20, current_price=0.5)
+
+    class BlockExecutor:
+        def execute(self, trade, decision, source_trade_key=None):
+            return ExecutionResult(False, "blocked")
+
+    settings = Settings(enable_crowding_check=False)
+    db = Database(tmp_path / "db.sqlite3")
+    ingestor = PollingIngestor(
+        settings,
+        db,
+        FakeDataClient([]),
+        AllowDecision(),
+        BlockExecutor(),
+    )
+    trade = make_trade()
+
+    assert ingestor.process_trade(trade)
+    assert db.get_source_token_state_for_trade(trade) is None
+
+
+def test_processed_trade_records_precise_observation_and_decision_timing(tmp_path) -> None:
+    class RejectDecision:
+        def decide(self, trade, crowding_score=None, source_trade=None):
+            return CopyDecision(False, "test rejection", details={})
+
+    settings = Settings(enable_crowding_check=False)
+    db = Database(tmp_path / "db.sqlite3")
+    ingestor = PollingIngestor(
+        settings,
+        db,
+        FakeDataClient([]),
+        RejectDecision(),
+        FakeExecutor(),
+    )
+
+    assert ingestor.process_trade(make_trade())
+
+    trade_row = db.recent_trades(1)[0]
+    state = db.source_token_states()[0]
+    details = __import__("json").loads(state["decision_details"])
+    assert trade_row["observed_at"]
+    assert details["observed_at"]
+    assert details["decision_completed_at"]
+    assert details["decision_processing_ms"] >= 0
+    assert details["observation_delay_seconds"] >= 0

@@ -13,7 +13,9 @@ class ResolutionScanner:
         self.gamma_client = gamma_client
 
     def scan_once(self) -> int:
-        return self._scan_positions(self.db.positions_for_resolution_scan())
+        settled = self._scan_positions(self.db.positions_for_resolution_scan())
+        self._scan_decision_markets()
+        return settled
 
     def scan_market(self, market_id: str) -> int:
         return self._scan_positions(self.db.positions_for_resolution_scan(market_id))
@@ -31,7 +33,10 @@ class ResolutionScanner:
                 )
             resolution = resolutions[cache_key]
             if not resolution or not resolution.resolved:
+                if resolution:
+                    self._record_resolution(cache_key, resolution)
                 continue
+            self._record_resolution(cache_key, resolution)
             payout = resolution.payout_for_token(position["asset_id"])
             if payout is None:
                 continue
@@ -68,3 +73,26 @@ class ResolutionScanner:
                 )
                 settled += 1
         return settled
+
+    def _scan_decision_markets(self) -> None:
+        resolutions = {}
+        for market in self.db.decision_markets_for_resolution_scan():
+            market_id = market["market_id"]
+            if market_id not in resolutions:
+                resolutions[market_id] = self.gamma_client.get_resolution(
+                    market_id=market_id,
+                    asset_id=market["asset_id"],
+                    condition_id=market["condition_id"] or market_id,
+                )
+            resolution = resolutions[market_id]
+            if resolution:
+                self._record_resolution(market_id, resolution)
+
+    def _record_resolution(self, market_id: str, resolution) -> None:
+        self.db.record_market_resolution_observation(
+            market_id,
+            resolution.resolved,
+            resolution.payout_by_token_id,
+            resolution.market_title,
+            resolution.raw_payload,
+        )

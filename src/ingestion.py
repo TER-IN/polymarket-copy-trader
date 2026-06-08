@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import signal
 import time
+from datetime import datetime
 from datetime import timezone
 
 from config import Settings
@@ -10,7 +11,7 @@ from crowding import CrowdingAnalyzer
 from db import Database
 from decision_engine import DecisionEngine
 from execution import Executor
-from models import OutcomeSelectionMode, RedemptionEvent, TradeEvent
+from models import OutcomeSelectionMode, RedemptionEvent, TradeEvent, utc_now
 from outcome_selection import OutcomeSelectionError, OutcomeSelector
 from polymarket_data import PolymarketDataClient
 from redemption import RedemptionExecutor
@@ -127,7 +128,9 @@ class PollingIngestor:
                     self.process_redemption(item)
 
     def process_trade(self, trade: TradeEvent) -> bool:
-        inserted = self.db.insert_trade(trade)
+        observed_at = utc_now()
+        processing_started = time.perf_counter()
+        inserted = self.db.insert_trade(trade, observed_at=observed_at)
         if not inserted:
             return False
         logger.info(
@@ -159,6 +162,7 @@ class PollingIngestor:
                 "source_outcome": trade.outcome,
                 "source_price": trade.price,
             }
+            _add_timing_details(details, trade, observed_at, processing_started)
             logger.info("copy decision=False reason=%s", reason)
             self.db.record_copy_decision(trade, False, reason, details)
             self.db.freeze_source_token_for_trade(trade, reason)
@@ -175,12 +179,14 @@ class PollingIngestor:
                 crowding_score,
                 source_trade=trade,
             )
+            _add_timing_details(decision.details, trade, observed_at, processing_started)
             logger.info("copy decision=%s reason=%s", decision.should_copy, decision.reason)
             self.db.record_copy_decision(trade, decision.should_copy, decision.reason, decision.details)
             if decision.should_copy:
-                self.executor.execute(selected_trade, decision, source_trade_key=trade.dedupe_key)
-                self.db.record_copied_source_trade(trade)
-            else:
+                result = self.executor.execute(selected_trade, decision, source_trade_key=trade.dedupe_key)
+                if result is None or result.accepted:
+                    self.db.record_copied_source_trade(trade)
+            elif _should_freeze_rejection(decision.reason):
                 self.db.freeze_source_token_for_trade(trade, decision.reason)
         except Exception as exc:
             logger.exception("trade processing failed")
@@ -221,3 +227,41 @@ class PollingIngestor:
         if trade.notional_usd < self.settings.min_trade_usd:
             return False
         return True
+
+
+def _should_freeze_rejection(reason: str) -> bool:
+    transient_prefixes = (
+        "available balance exhausted",
+        "copy size capped to zero",
+        "daily spend cap exhausted",
+        "maximum buy price exceeded",
+        "maximum net upside",
+        "market duration unavailable",
+        "market ends too late",
+        "market end time",
+        "market is not an authoritative",
+        "per-market exposure cap exhausted",
+        "trade too old",
+        "Up/Down market duration",
+    )
+    return not reason.startswith(transient_prefixes)
+
+
+def _add_timing_details(
+    details: dict,
+    trade: TradeEvent,
+    observed_at: datetime,
+    processing_started: float,
+) -> None:
+    completed_at = utc_now()
+    details.update(
+        {
+            "source_trade_time": trade.timestamp.astimezone(timezone.utc).isoformat(),
+            "observed_at": observed_at.isoformat(),
+            "observation_delay_seconds": (
+                observed_at - trade.timestamp.astimezone(timezone.utc)
+            ).total_seconds(),
+            "decision_completed_at": completed_at.isoformat(),
+            "decision_processing_ms": (time.perf_counter() - processing_started) * 1000,
+        }
+    )

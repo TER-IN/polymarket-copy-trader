@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS target_trades (
   size REAL NOT NULL,
   notional_usd REAL NOT NULL,
   raw_payload TEXT NOT NULL,
+  observed_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -49,9 +50,14 @@ CREATE TABLE IF NOT EXISTS copied_orders (
   status TEXT NOT NULL,
   clob_order_id TEXT,
   filled_shares REAL DEFAULT 0,
+  filled_notional_usd REAL DEFAULT 0,
   avg_fill_price REAL,
+  estimated_fee_usd REAL NOT NULL DEFAULT 0,
+  actual_fee_usd REAL NOT NULL DEFAULT 0,
+  quote_snapshot TEXT NOT NULL DEFAULT '{}',
   error_message TEXT,
   raw_response TEXT,
+  recorded_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -167,6 +173,22 @@ CREATE TABLE IF NOT EXISTS copy_decisions (
   details TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS market_resolution_observations (
+  market_id TEXT PRIMARY KEY,
+  resolved INTEGER NOT NULL,
+  payout_by_token_id TEXT NOT NULL DEFAULT '{}',
+  market_title TEXT,
+  raw_payload TEXT NOT NULL DEFAULT '{}',
+  checked_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_target_trades_market_asset
+  ON target_trades(market_id, condition_id, asset_id, token_id);
+CREATE INDEX IF NOT EXISTS idx_copy_decisions_created
+  ON copy_decisions(created_at);
+CREATE INDEX IF NOT EXISTS idx_resolution_observations_checked
+  ON market_resolution_observations(resolved, checked_at);
 """
 
 
@@ -190,6 +212,12 @@ class Database:
     def init(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            _ensure_column(conn, "copied_orders", "filled_notional_usd", "REAL DEFAULT 0")
+            _ensure_column(conn, "copied_orders", "estimated_fee_usd", "REAL NOT NULL DEFAULT 0")
+            _ensure_column(conn, "copied_orders", "actual_fee_usd", "REAL NOT NULL DEFAULT 0")
+            _ensure_column(conn, "copied_orders", "quote_snapshot", "TEXT NOT NULL DEFAULT '{}'")
+            _ensure_column(conn, "copied_orders", "recorded_at", "TEXT")
+            _ensure_column(conn, "target_trades", "observed_at", "TEXT")
 
     def reset_source_baseline(self, wallet: str) -> None:
         with self.connect() as conn:
@@ -369,7 +397,8 @@ class Database:
                 )
             )
 
-    def insert_trade(self, trade: TradeEvent) -> bool:
+    def insert_trade(self, trade: TradeEvent, observed_at: datetime | None = None) -> bool:
+        observed_at = observed_at or datetime.now(timezone.utc)
         with self.connect() as conn:
             try:
                 conn.execute(
@@ -377,8 +406,8 @@ class Database:
                     INSERT INTO target_trades (
                       dedupe_key, source_wallet, transaction_hash, timestamp, market_id,
                       condition_id, asset_id, token_id, market_title, outcome, side,
-                      price, size, notional_usd, raw_payload
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      price, size, notional_usd, raw_payload, observed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         trade.dedupe_key,
@@ -396,6 +425,7 @@ class Database:
                         trade.size,
                         trade.notional_usd,
                         json.dumps(trade.raw_payload, sort_keys=True),
+                        observed_at.isoformat(),
                     ),
                 )
                 return True
@@ -451,7 +481,11 @@ class Database:
         status: str,
         clob_order_id: str | None = None,
         filled_shares: float = 0,
+        filled_notional_usd: float = 0,
         avg_fill_price: float | None = None,
+        estimated_fee_usd: float = 0,
+        actual_fee_usd: float = 0,
+        quote_snapshot: dict | None = None,
         error_message: str | None = None,
         raw_response: dict | None = None,
     ) -> None:
@@ -461,8 +495,9 @@ class Database:
                 INSERT INTO copied_orders (
                   source_trade_key, market_id, asset_id, outcome, side, requested_notional_usd,
                   requested_shares, limit_price, status, clob_order_id, filled_shares,
-                  avg_fill_price, error_message, raw_response
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  filled_notional_usd, avg_fill_price, estimated_fee_usd, actual_fee_usd,
+                  quote_snapshot, error_message, raw_response, recorded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     source_trade_key,
@@ -476,9 +511,84 @@ class Database:
                     status,
                     clob_order_id,
                     filled_shares,
+                    filled_notional_usd,
                     avg_fill_price,
+                    estimated_fee_usd,
+                    actual_fee_usd,
+                    json.dumps(quote_snapshot or {}, sort_keys=True),
                     error_message,
                     json.dumps(raw_response or {}, sort_keys=True),
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+
+    def decision_markets_for_resolution_scan(self, limit: int = 100) -> list[sqlite3.Row]:
+        retry_before = datetime.now(timezone.utc) - timedelta(minutes=5)
+        with self.connect() as conn:
+            return list(
+                conn.execute(
+                    """
+                    SELECT
+                      COALESCE(tt.market_id, tt.condition_id) AS market_id,
+                      tt.condition_id,
+                      COALESCE(tt.asset_id, tt.token_id) AS asset_id,
+                      MAX(tt.market_title) AS market_title
+                    FROM copy_decisions cd
+                    JOIN target_trades tt ON tt.dedupe_key = cd.source_trade_key
+                    LEFT JOIN market_resolution_observations mro
+                      ON mro.market_id = COALESCE(tt.market_id, tt.condition_id)
+                    WHERE COALESCE(tt.market_id, tt.condition_id) IS NOT NULL
+                      AND COALESCE(tt.asset_id, tt.token_id) IS NOT NULL
+                      AND json_extract(cd.details, '$.market_end_time') IS NOT NULL
+                      AND json_extract(cd.details, '$.market_end_time') <= ?
+                      AND (
+                        mro.market_id IS NULL
+                        OR (
+                          mro.resolved = 0
+                          AND mro.checked_at < ?
+                        )
+                      )
+                    GROUP BY COALESCE(tt.market_id, tt.condition_id), tt.condition_id,
+                             COALESCE(tt.asset_id, tt.token_id)
+                    ORDER BY MIN(tt.timestamp) ASC
+                    LIMIT ?
+                    """,
+                    (
+                        datetime.now(timezone.utc).isoformat(),
+                        retry_before.isoformat(),
+                        limit,
+                    ),
+                )
+            )
+
+    def record_market_resolution_observation(
+        self,
+        market_id: str,
+        resolved: bool,
+        payout_by_token_id: dict[str, float],
+        market_title: str | None,
+        raw_payload: dict,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO market_resolution_observations (
+                  market_id, resolved, payout_by_token_id, market_title, raw_payload, checked_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(market_id) DO UPDATE SET
+                  resolved = excluded.resolved,
+                  payout_by_token_id = excluded.payout_by_token_id,
+                  market_title = excluded.market_title,
+                  raw_payload = excluded.raw_payload,
+                  checked_at = excluded.checked_at
+                """,
+                (
+                    market_id,
+                    int(resolved),
+                    json.dumps(payout_by_token_id, sort_keys=True),
+                    market_title,
+                    json.dumps(raw_payload, sort_keys=True),
+                    datetime.now(timezone.utc).isoformat(),
                 ),
             )
 
@@ -896,7 +1006,28 @@ class Database:
                           ORDER BY tt.timestamp DESC
                           LIMIT 1
                         )
-                      ) AS event_slug
+                      ) AS event_slug,
+                      (
+                        SELECT json_extract(cd.details, '$.market_end_time')
+                        FROM copied_orders co
+                        JOIN copy_decisions cd ON cd.source_trade_key = co.source_trade_key
+                        WHERE co.market_id = cp.market_id
+                          AND co.asset_id = cp.asset_id
+                          AND COALESCE(co.outcome, '') = COALESCE(cp.outcome, '')
+                          AND json_extract(cd.details, '$.market_end_time') IS NOT NULL
+                        ORDER BY cd.created_at DESC
+                        LIMIT 1
+                      ) AS market_end_time,
+                      (
+                        SELECT mro.resolved
+                        FROM market_resolution_observations mro
+                        WHERE mro.market_id = cp.market_id
+                      ) AS resolution_resolved,
+                      (
+                        SELECT mro.checked_at
+                        FROM market_resolution_observations mro
+                        WHERE mro.market_id = cp.market_id
+                      ) AS resolution_checked_at
                     FROM copied_positions cp
                     ORDER BY cp.updated_at DESC
                     """
@@ -940,6 +1071,10 @@ class Database:
                       co.limit_price,
                       co.avg_fill_price,
                       co.filled_shares,
+                      co.filled_notional_usd,
+                      co.estimated_fee_usd,
+                      co.actual_fee_usd,
+                      co.quote_snapshot,
                       co.error_message,
                       co.created_at AS copied_at,
                       tt.timestamp AS source_time,
@@ -1068,7 +1203,16 @@ class Database:
         with self.connect() as conn:
             row = conn.execute(
                 """
-                SELECT COALESCE(SUM(requested_notional_usd), 0) AS spend
+                SELECT COALESCE(SUM(
+                  CASE
+                    WHEN filled_notional_usd > 0 THEN filled_notional_usd
+                    ELSE requested_notional_usd
+                  END
+                  + CASE
+                      WHEN actual_fee_usd > 0 THEN actual_fee_usd
+                      ELSE estimated_fee_usd
+                    END
+                ), 0) AS spend
                 FROM copied_orders
                 WHERE side = 'BUY' AND status IN ('dry_run', 'submitted', 'filled', 'partial')
                   AND created_at >= ?
@@ -1082,7 +1226,15 @@ class Database:
         with self.connect() as conn:
             order_rows = conn.execute(
                 """
-                SELECT side, requested_notional_usd
+                SELECT side,
+                       CASE
+                         WHEN filled_notional_usd > 0 THEN filled_notional_usd
+                         ELSE requested_notional_usd
+                       END AS effective_notional_usd,
+                       CASE
+                         WHEN actual_fee_usd > 0 THEN actual_fee_usd
+                         ELSE estimated_fee_usd
+                       END AS fee_usd
                 FROM copied_orders
                 WHERE status = 'dry_run'
                 """
@@ -1096,8 +1248,9 @@ class Database:
             ).fetchone()
         cash = starting_balance_usd
         for row in order_rows:
-            notional = float(row["requested_notional_usd"] or 0)
-            cash += notional if row["side"] == TradeSide.SELL.value else -notional
+            notional = float(row["effective_notional_usd"] or 0)
+            fee = float(row["fee_usd"] or 0)
+            cash += notional - fee if row["side"] == TradeSide.SELL.value else -notional - fee
         cash += float(payout_row["payout"] or 0)
         return max(0.0, cash)
 
@@ -1118,13 +1271,23 @@ class Database:
                 "settlement_count": 0,
                 "settlement_payout": 0.0,
                 "settlement_pnl": 0.0,
+                "fees": 0.0,
                 "net_cashflow": 0.0,
             }
 
         with self.connect() as conn:
             order_rows = conn.execute(
                 """
-                SELECT side, requested_notional_usd, created_at
+                SELECT side,
+                       CASE
+                         WHEN filled_notional_usd > 0 THEN filled_notional_usd
+                         ELSE requested_notional_usd
+                       END AS effective_notional_usd,
+                       CASE
+                         WHEN actual_fee_usd > 0 THEN actual_fee_usd
+                         ELSE estimated_fee_usd
+                       END AS fee_usd,
+                       created_at
                 FROM copied_orders
                 WHERE status IN ('dry_run', 'submitted', 'filled', 'partial')
                   AND created_at >= ?
@@ -1145,15 +1308,17 @@ class Database:
             bucket = rows_by_day.get(day)
             if not bucket:
                 continue
-            notional = float(row["requested_notional_usd"] or 0)
+            notional = float(row["effective_notional_usd"] or 0)
+            fee = float(row["fee_usd"] or 0)
+            bucket["fees"] = float(bucket["fees"]) + fee
             if row["side"] == TradeSide.BUY.value:
                 bucket["buy_count"] = int(bucket["buy_count"]) + 1
                 bucket["buy_spend"] = float(bucket["buy_spend"]) + notional
-                bucket["net_cashflow"] = float(bucket["net_cashflow"]) - notional
+                bucket["net_cashflow"] = float(bucket["net_cashflow"]) - notional - fee
             elif row["side"] == TradeSide.SELL.value:
                 bucket["sell_count"] = int(bucket["sell_count"]) + 1
                 bucket["sell_notional"] = float(bucket["sell_notional"]) + notional
-                bucket["net_cashflow"] = float(bucket["net_cashflow"]) + notional
+                bucket["net_cashflow"] = float(bucket["net_cashflow"]) + notional - fee
 
         for row in settlement_rows:
             day = _parse_db_utc(row["created_at"]).astimezone(tz).date().isoformat()
@@ -1286,6 +1451,17 @@ def _normalize_freeze_reason(reason: str) -> str:
     while normalized.lower().startswith(prefix):
         normalized = normalized[len(prefix) :].strip()
     return normalized or "risk mismatch"
+
+
+def _ensure_column(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    definition: str,
+) -> None:
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def _local_day_bounds_utc(timezone_name: str) -> tuple[datetime, datetime]:

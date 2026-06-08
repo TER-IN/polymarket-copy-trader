@@ -1,10 +1,12 @@
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from config import Settings
 from db import Database
 from decision_engine import calculate_copy_size, passes_slippage, DecisionEngine
-from models import TradeEvent, TradeSide
+from models import MarketTypeFilter, TradeEvent, TradeSide
 from polymarket_clob import BookQuote
+from polymarket_gamma import MarketMetadata, OutcomeToken
 from positions import apply_buy
 
 
@@ -31,6 +33,23 @@ class FakeMarketEnd:
 
     def get_market_end_time(self, market_id: str, asset_id: str, condition_id: str | None = None):
         return self.end_time
+
+
+class FakeMarketMetadata(FakeMarketEnd):
+    def __init__(self, duration_seconds: int):
+        self.start_time = datetime.now(timezone.utc)
+        self.metadata = MarketMetadata(
+            start_time=self.start_time,
+            end_time=self.start_time + timedelta(seconds=duration_seconds),
+            up_down_tokens=(OutcomeToken("up", "Up"), OutcomeToken("down", "Down")),
+            fee_rate=0,
+            fee_exponent=1,
+            taker_only_fee=True,
+        )
+        super().__init__(self.metadata.end_time)
+
+    def get_market_metadata(self, market_id: str, asset_id: str, condition_id: str | None = None):
+        return self.metadata
 
 
 def make_trade(side: TradeSide = TradeSide.BUY) -> TradeEvent:
@@ -83,6 +102,60 @@ def test_decision_allows_buy(tmp_path) -> None:
     assert decision.should_copy
     assert decision.copy_notional_usd == 10
     assert decision.copy_shares == 10 / 0.51
+
+
+def test_market_title_allowlist_matches_buy_case_insensitively(tmp_path) -> None:
+    settings = Settings(
+        allow_market_title_keywords=["bitcoin"],
+        max_seconds_until_market_end=None,
+        max_trade_age_seconds=60,
+    )
+    db = Database(tmp_path / "db.sqlite3")
+    engine = DecisionEngine(settings, db, FakeClob())
+    trade = replace(make_trade(), market_title="BITCOIN Up or Down")
+
+    decision = engine.decide(trade)
+
+    assert decision.should_copy
+    assert decision.details["strategy_config"]["allow_market_title_keywords"] == ["bitcoin"]
+
+
+def test_market_title_allowlist_rejects_nonmatching_buy(tmp_path) -> None:
+    settings = Settings(
+        allow_market_title_keywords=["bitcoin", "ethereum"],
+        max_seconds_until_market_end=None,
+        max_trade_age_seconds=60,
+    )
+    db = Database(tmp_path / "db.sqlite3")
+    engine = DecisionEngine(settings, db, FakeClob())
+
+    decision = engine.decide(make_trade())
+
+    assert not decision.should_copy
+    assert decision.reason == (
+        "market title does not match allowed keywords: bitcoin, ethereum"
+    )
+    assert decision.details["strategy_config"]["allow_market_title_keywords"] == [
+        "bitcoin",
+        "ethereum",
+    ]
+
+
+def test_market_title_allowlist_does_not_block_sell(tmp_path) -> None:
+    settings = Settings(
+        allow_market_title_keywords=["bitcoin"],
+        max_trade_usd=100,
+        max_trade_age_seconds=60,
+    )
+    db = Database(tmp_path / "db.sqlite3")
+    position = apply_buy(None, "m1", "tok1", "Yes", 20, 0.5, "0xabc")
+    db.upsert_position(position)
+    db.record_copied_source_trade(make_trade(TradeSide.BUY))
+    engine = DecisionEngine(settings, db, FakeClob(bid=0.49))
+
+    decision = engine.decide(make_trade(TradeSide.SELL))
+
+    assert decision.should_copy
 
 
 def test_decision_refuses_sell_without_position(tmp_path) -> None:
@@ -298,3 +371,39 @@ def test_buy_skips_when_market_end_is_missing(tmp_path) -> None:
 
     assert not decision.should_copy
     assert decision.reason == "market end time unavailable"
+
+
+def test_short_duration_up_down_filter_accepts_configured_duration(tmp_path) -> None:
+    settings = Settings(
+        market_type_filter=MarketTypeFilter.SHORT_DURATION_UP_DOWN,
+        up_down_min_duration_seconds=300,
+        up_down_max_duration_seconds=900,
+        max_seconds_until_market_end=None,
+        max_trade_age_seconds=60,
+    )
+    db = Database(tmp_path / "db.sqlite3")
+    engine = DecisionEngine(
+        settings,
+        db,
+        FakeClob(),
+        market_end_provider=FakeMarketMetadata(300),
+    )
+
+    assert engine.decide(make_trade()).should_copy
+
+
+def test_minimum_net_upside_rejects_small_theoretical_return(tmp_path) -> None:
+    settings = Settings(
+        max_trade_usd=10,
+        min_net_upside_usd=11,
+        max_seconds_until_market_end=None,
+        max_trade_age_seconds=60,
+    )
+    db = Database(tmp_path / "db.sqlite3")
+
+    decision = DecisionEngine(settings, db, FakeClob(ask=0.5)).decide(make_trade())
+
+    assert not decision.should_copy
+    assert "maximum net upside" in decision.reason
+    assert decision.details["strategy_config"]["min_net_upside_usd"] == 11
+    assert decision.details["strategy_config"]["max_trade_usd"] == 10

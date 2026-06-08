@@ -40,6 +40,17 @@ def test_position_update_buy_and_sell(tmp_path) -> None:
     assert round(position.realized_pnl, 2) == 0.4
 
 
+def test_position_cost_and_realized_pnl_include_fees() -> None:
+    from positions import apply_buy, apply_sell
+
+    position = apply_buy(None, "m1", "tok1", "Yes", 10, 0.5, "0xabc", fee_usd=0.2)
+    assert position.total_cost == 5.2
+    assert position.avg_entry_price == 0.52
+
+    position = apply_sell(position, 10, 0.6, fee_usd=0.1)
+    assert round(position.realized_pnl, 2) == 0.7
+
+
 def test_dry_run_execution_records_order_and_position(tmp_path) -> None:
     settings = Settings(max_trade_usd=10)
     db = Database(tmp_path / "db.sqlite3")

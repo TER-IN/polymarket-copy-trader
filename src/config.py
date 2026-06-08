@@ -7,7 +7,14 @@ from zoneinfo import ZoneInfo
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from models import CopyMode, OutcomeSelectionMode, RiskMismatchPolicy, SellSizingMode, SourcePositionPolicy
+from models import (
+    CopyMode,
+    MarketTypeFilter,
+    OutcomeSelectionMode,
+    RiskMismatchPolicy,
+    SellSizingMode,
+    SourcePositionPolicy,
+)
 
 
 class Settings(BaseSettings):
@@ -47,9 +54,20 @@ class Settings(BaseSettings):
     max_slippage_cents: float = Field(default=2.0, alias="MAX_SLIPPAGE_CENTS")
     max_buy_price: float | None = Field(default=None, alias="MAX_BUY_PRICE")
     max_seconds_until_market_end: int | None = Field(default=None, alias="MAX_SECONDS_UNTIL_MARKET_END")
+    market_type_filter: MarketTypeFilter = Field(default=MarketTypeFilter.ALL, alias="MARKET_TYPE_FILTER")
+    up_down_min_duration_seconds: int = Field(default=300, alias="UP_DOWN_MIN_DURATION_SECONDS")
+    up_down_max_duration_seconds: int = Field(default=900, alias="UP_DOWN_MAX_DURATION_SECONDS")
+    min_net_upside_usd: float | None = Field(default=None, alias="MIN_NET_UPSIDE_USD")
+    min_net_upside_percent: float | None = Field(default=None, alias="MIN_NET_UPSIDE_PERCENT")
+    net_upside_safety_margin_usd: float = Field(default=0.0, alias="NET_UPSIDE_SAFETY_MARGIN_USD")
+    include_exit_fee_in_upside: bool = Field(default=False, alias="INCLUDE_EXIT_FEE_IN_UPSIDE")
     min_trade_usd: float = Field(default=1.0, alias="MIN_TRADE_USD")
     max_trade_age_seconds: int = Field(default=120, alias="MAX_TRADE_AGE_SECONDS")
     allow_market_categories: list[str] = Field(default_factory=list, alias="ALLOW_MARKET_CATEGORIES")
+    allow_market_title_keywords: list[str] = Field(
+        default_factory=list,
+        alias="ALLOW_MARKET_TITLE_KEYWORDS",
+    )
     block_market_keywords: list[str] = Field(default_factory=list, alias="BLOCK_MARKET_KEYWORDS")
 
     enable_crowding_check: bool = Field(default=True, alias="ENABLE_CROWDING_CHECK")
@@ -57,9 +75,9 @@ class Settings(BaseSettings):
     crowding_max_followers: int = Field(default=5, alias="CROWDING_MAX_FOLLOWERS")
 
     enable_resolution_scanner: bool = Field(default=True, alias="ENABLE_RESOLUTION_SCANNER")
-    resolution_scan_interval_seconds: int = Field(default=300, alias="RESOLUTION_SCAN_INTERVAL_SECONDS")
+    resolution_scan_interval_seconds: int = Field(default=60, alias="RESOLUTION_SCAN_INTERVAL_SECONDS")
 
-    daily_spend_cap_usd: float = Field(default=100.0, alias="DAILY_SPEND_CAP_USD")
+    daily_spend_cap_usd: float | None = Field(default=100.0, alias="DAILY_SPEND_CAP_USD")
     per_market_exposure_cap_usd: float = Field(default=50.0, alias="PER_MARKET_EXPOSURE_CAP_USD")
     dry_run_starting_balance_usd: float | None = Field(default=None, alias="DRY_RUN_STARTING_BALANCE_USD")
     allow_copy_ratio_gt_one: bool = Field(default=False, alias="ALLOW_COPY_RATIO_GT_ONE")
@@ -82,6 +100,7 @@ class Settings(BaseSettings):
     @field_validator(
         "target_wallets",
         "allow_market_categories",
+        "allow_market_title_keywords",
         "block_market_keywords",
         mode="before",
     )
@@ -99,6 +118,21 @@ class Settings(BaseSettings):
         ZoneInfo(value)
         return value
 
+    @field_validator(
+        "daily_spend_cap_usd",
+        "max_buy_price",
+        "max_seconds_until_market_end",
+        "max_trade_usd",
+        "min_net_upside_usd",
+        "min_net_upside_percent",
+        mode="before",
+    )
+    @classmethod
+    def parse_optional_number(cls, value: Any) -> Any:
+        if isinstance(value, str) and value.strip().lower() in {"", "none", "null", "unlimited"}:
+            return None
+        return value
+
     @model_validator(mode="after")
     def validate_values(self) -> "Settings":
         if self.copy_ratio <= 0:
@@ -111,6 +145,18 @@ class Settings(BaseSettings):
             raise ValueError("MAX_BUY_PRICE must be greater than 0 and at most 1")
         if self.max_seconds_until_market_end is not None and self.max_seconds_until_market_end <= 0:
             raise ValueError("MAX_SECONDS_UNTIL_MARKET_END must be positive")
+        if self.up_down_min_duration_seconds <= 0:
+            raise ValueError("UP_DOWN_MIN_DURATION_SECONDS must be positive")
+        if self.up_down_max_duration_seconds < self.up_down_min_duration_seconds:
+            raise ValueError("UP_DOWN_MAX_DURATION_SECONDS must be at least UP_DOWN_MIN_DURATION_SECONDS")
+        if self.min_net_upside_usd is not None and self.min_net_upside_usd < 0:
+            raise ValueError("MIN_NET_UPSIDE_USD cannot be negative")
+        if self.min_net_upside_percent is not None and self.min_net_upside_percent < 0:
+            raise ValueError("MIN_NET_UPSIDE_PERCENT cannot be negative")
+        if self.net_upside_safety_margin_usd < 0:
+            raise ValueError("NET_UPSIDE_SAFETY_MARGIN_USD cannot be negative")
+        if self.daily_spend_cap_usd is not None and self.daily_spend_cap_usd < 0:
+            raise ValueError("DAILY_SPEND_CAP_USD cannot be negative")
         if self.dry_run_starting_balance_usd is not None and self.dry_run_starting_balance_usd < 0:
             raise ValueError("DRY_RUN_STARTING_BALANCE_USD cannot be negative")
         return self

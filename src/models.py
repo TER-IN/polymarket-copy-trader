@@ -46,6 +46,11 @@ class OutcomeSelectionMode(StrEnum):
     INVERSE_UP_DOWN = "inverse_up_down"
 
 
+class MarketTypeFilter(StrEnum):
+    ALL = "all"
+    SHORT_DURATION_UP_DOWN = "short_duration_up_down"
+
+
 @dataclass(frozen=True)
 class TradeEvent:
     source_wallet: str
@@ -115,7 +120,18 @@ class CopyDecision:
     allowed_price: float | None = None
     current_price: float | None = None
     reduce_only: bool = False
+    estimated_fee_usd: float = 0.0
+    fill_ratio: float = 1.0
     details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ExecutionResult:
+    accepted: bool
+    status: str
+    filled_shares: float = 0.0
+    filled_notional_usd: float = 0.0
+    fee_usd: float = 0.0
 
 
 @dataclass(frozen=True)

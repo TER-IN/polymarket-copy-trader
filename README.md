@@ -64,16 +64,22 @@ Important `.env` values:
 - `MAX_SLIPPAGE_CENTS`: max worse price versus the selected outcome's reference price.
 - `MAX_BUY_PRICE`: optional maximum executable price for copied buys.
 - `MAX_SECONDS_UNTIL_MARKET_END`: optional maximum time until the advertised market end; buys with missing end metadata are skipped.
+- `MARKET_TYPE_FILTER`: `all` or `short_duration_up_down`. The latter requires an authoritative two-token `Up`/`Down` market in the configured duration range.
+- `UP_DOWN_MIN_DURATION_SECONDS` / `UP_DOWN_MAX_DURATION_SECONDS`: allowed scheduled duration for the short-duration filter.
+- `MIN_NET_UPSIDE_USD` / `MIN_NET_UPSIDE_PERCENT`: optional minimum theoretical payout advantage after entry fee, consumed spread/book depth, and safety margin.
+- `NET_UPSIDE_SAFETY_MARGIN_USD`: amount subtracted from theoretical upside before applying the minimum.
+- `INCLUDE_EXIT_FEE_IN_UPSIDE`: reserve an estimated second fee when evaluating upside. Leave false when positions are intended to settle.
 - `MIN_TRADE_USD`: ignore source trades below this.
 - `MAX_TRADE_AGE_SECONDS`: ignore stale trades.
 - `ALLOW_MARKET_CATEGORIES`: reserved for category filtering.
+- `ALLOW_MARKET_TITLE_KEYWORDS`: optional comma-separated, case-insensitive title substrings. When configured, only matching BUYs are allowed; SELLs remain available to reduce existing positions.
 - `BLOCK_MARKET_KEYWORDS`: comma-separated market title keyword blocks.
 - `ENABLE_CROWDING_CHECK`: enable suspected copy pressure checks.
 - `CROWDING_LOOKBACK_SECONDS`: window after target trade.
 - `CROWDING_MAX_FOLLOWERS`: skip if suspected follower count exceeds this.
 - `ENABLE_RESOLUTION_SCANNER`: scan local copied positions for resolved markets.
-- `RESOLUTION_SCAN_INTERVAL_SECONDS`: interval for resolution scans during `run-dry`/`run-live`.
-- `DAILY_SPEND_CAP_USD`: local daily copy cap.
+- `RESOLUTION_SCAN_INTERVAL_SECONDS`: interval for resolution scans during `run-dry`/`run-live`; 60 seconds is the default for timely short-market settlement.
+- `DAILY_SPEND_CAP_USD`: local daily copy cap including estimated fees. Empty, `none`, or `unlimited` disables only this cap.
 - `PER_MARKET_EXPOSURE_CAP_USD`: local per-market cap.
 - `DRY_RUN_STARTING_BALANCE_USD`: optional simulated cash balance. Dry-run buys reduce it; sells and settlements replenish it.
 - `POLYMARKET_PRIVATE_KEY`: only required for live mode.
@@ -110,9 +116,15 @@ Live mode refuses to start unless:
 - `MAX_TRADE_USD` is set.
 - `COPY_RATIO <= 1`, unless `ALLOW_COPY_RATIO_GT_ONE=true`.
 
-If a file named `STOP_TRADING` exists in the project root, new dry-run and live BUY/SELL orders are blocked while the polling loop and resolution scanner continue running. Already-submitted live orders are not cancelled. Trades observed while stopped are recorded as blocked and are not retried after the file is removed.
+If a file named `STOP_TRADING` exists in the project root, new dry-run and live BUY/SELL orders are blocked while the polling loop and resolution scanner continue running. Already-submitted live orders are not cancelled. Blocked trades do not advance the tracked source-token lifecycle, but the observed source trade is deduplicated and is not retried after the file is removed.
 
-Current limitation: a blocked trade still advances the tracked source-token lifecycle even though no copied order was executed. Treat `STOP_TRADING` as a one-way emergency stop for the current run rather than relying on repeated stop/resume cycles.
+Dry-run execution walks visible order-book levels within the slippage and maximum-price limits, records partial fills, and estimates the market fee. Simulated cash, position cost basis, realized PnL, and dashboard cashflow include those fees. Live FAK responses receive an immediate order-status lookup when an order ID is available; exchange-reported fees are preferred over estimates.
+
+Each decision stores the exact strategy thresholds, source/observation/decision timestamps, polling delay, market metadata, visible book, simulated fills, fee calculation, and rejection reason. The resolution scanner also stores authoritative payout maps for evaluated markets after their advertised end, including markets whose trades were rejected. This supports later counterfactual analysis of filters and source wallets.
+
+Polymarket's website can display an outcome before the public resolution API returns its authoritative payout. During that delay, ended positions remain visible as `awaiting_resolution`. Missing bids are displayed as unknown values rather than as a total loss, and the scanner retries automatically.
+
+Resolved live winners are marked `redeem_required`. Automatic on-chain redemption is intentionally not performed because redemption burns the winning-token balance and requires a separately signed Conditional Tokens transaction.
 
 ## Tests
 
