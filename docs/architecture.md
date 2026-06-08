@@ -13,16 +13,17 @@ This project is dry-run first. Public Polymarket data is used for monitoring, CL
 6. Binary and multi-outcome trades are both represented by the specific traded `asset_id` / `token_id` plus `outcome`.
 7. `Database.insert_trade` deduplicates by transaction, wallet, market/outcome, side, size, and price.
 8. `source_token_states` tracks whether each source token lifecycle is clean, pre-existing, or frozen.
-9. `CrowdingAnalyzer` optionally checks nearby same-market/outcome trades and stores "suspected copy pressure".
-10. `DecisionEngine` applies age, notional, slippage, maximum buy price, market-end window, available balance, liquidity, crowding, daily spend, exposure, source-position lifecycle, and sell-position checks.
-11. `Executor` records dry-run orders or submits guarded live FAK orders through `py-clob-client`.
-12. `ResolutionScanner` checks local copied positions against public Gamma market resolution data. Dry-run wins/losses are settled locally; live winners are marked `redeem_required`; live losses are realized as losses.
-13. `RedemptionExecutor` handles source `REDEEM` activity by triggering `ResolutionScanner` for that condition. Only authoritative token-level winner data determines payout.
-14. `UserPnlClient` reads Polymarket's public user PnL series for dashboard-only source performance charts.
-15. `positions.py` keeps local copied position state and prevents blind sell copying.
-16. `funds.py` derives replenishable dry-run cash from local orders/settlements and reads authenticated collateral balance in live mode.
-17. `copy_decisions` stores the exact decision-time risk snapshot used by Source States.
-18. `SettlementAuditor` previews or applies authoritative corrections to legacy condition-level source-redemption settlements.
+9. `OutcomeSelector` optionally maps a source `Up`/`Down` token to the authoritative opposite token while preserving the original source event for lifecycle tracking.
+10. `CrowdingAnalyzer` optionally checks nearby same-market/outcome trades and stores "suspected copy pressure".
+11. `DecisionEngine` applies age, notional, slippage, maximum buy price, market-end window, available balance, liquidity, crowding, daily spend, exposure, source-position lifecycle, and sell-position checks.
+12. `Executor` records dry-run orders or submits guarded live FAK orders through `py-clob-client`.
+13. `ResolutionScanner` checks local copied positions against public Gamma market resolution data. Dry-run wins/losses are settled locally; live winners are marked `redeem_required`; live losses are realized as losses.
+14. `RedemptionExecutor` handles source `REDEEM` activity by triggering `ResolutionScanner` for that condition. Only authoritative token-level winner data determines payout.
+15. `UserPnlClient` reads Polymarket's public user PnL series for dashboard-only source performance charts.
+16. `positions.py` keeps local copied position state and prevents blind sell copying.
+17. `funds.py` derives replenishable dry-run cash from local orders/settlements and reads authenticated collateral balance in live mode.
+18. `copy_decisions` stores the exact decision-time risk snapshot used by Source States.
+19. `SettlementAuditor` previews or applies authoritative corrections to legacy condition-level source-redemption settlements.
 
 ## Live Trading Boundary
 
@@ -34,6 +35,8 @@ Live trading requires:
 - no `STOP_TRADING` file
 
 The live executor uses marketable limit orders with FAK behavior. Market orders on Polymarket are represented as marketable limit orders, so slippage limits are enforced before submission.
+
+`STOP_TRADING` is checked at the execution boundary. It blocks new dry-run and live BUY/SELL orders without stopping polling or resolution scanning, and it does not cancel already-submitted live orders. Observed trades are still deduplicated and blocked orders are not retried. The current ingestion flow also advances source-token lifecycle state after a blocked execution, so repeated stop/resume cycles can desynchronize source lifecycle state from copied positions.
 
 ## Data Limits
 

@@ -19,12 +19,18 @@ class Executor:
         self.settings = settings
         self.db = db
 
-    def execute(self, trade: TradeEvent, decision: CopyDecision) -> None:
+    def execute(
+        self,
+        trade: TradeEvent,
+        decision: CopyDecision,
+        source_trade_key: str | None = None,
+    ) -> None:
         if not decision.should_copy:
             return
+        source_trade_key = source_trade_key or trade.dedupe_key
         if self.settings.stop_trading_file.exists():
             self.db.record_order(
-                trade.dedupe_key,
+                source_trade_key,
                 trade,
                 decision.copy_notional_usd,
                 None,
@@ -34,26 +40,29 @@ class Executor:
             )
             return
         if self.settings.copy_mode == CopyMode.DRY_RUN:
-            self._dry_run(trade, decision)
+            self._dry_run(trade, decision, source_trade_key)
             return
-        self._live(trade, decision)
+        self._live(trade, decision, source_trade_key)
 
-    def _dry_run(self, trade: TradeEvent, decision: CopyDecision) -> None:
+    def _dry_run(self, trade: TradeEvent, decision: CopyDecision, source_trade_key: str) -> None:
         shares = decision.copy_shares
         if shares is None:
             shares = _shares_from_notional(decision.copy_notional_usd, decision.current_price or trade.price)
         self.db.record_order(
-            trade.dedupe_key,
+            source_trade_key,
             trade,
             decision.copy_notional_usd,
             shares,
             decision.allowed_price,
             "dry_run",
-            raw_response={"message": "dry run; no order submitted"},
+            raw_response={
+                "message": "dry run; no order submitted",
+                "outcome_selection": trade.raw_payload.get("_outcome_selection"),
+            },
         )
         self._update_position_from_fill(trade, shares, decision.current_price or trade.price)
 
-    def _live(self, trade: TradeEvent, decision: CopyDecision) -> None:
+    def _live(self, trade: TradeEvent, decision: CopyDecision, source_trade_key: str) -> None:
         try:
             response = self._submit_live_order(trade, decision)
             status = str(response.get("status") or response.get("state") or "submitted")
@@ -62,7 +71,7 @@ class Executor:
             avg_price = response.get("avgPrice") or response.get("avg_fill_price")
             avg_fill_price = float(avg_price) if avg_price is not None else None
             self.db.record_order(
-                trade.dedupe_key,
+                source_trade_key,
                 trade,
                 decision.copy_notional_usd,
                 None,
@@ -71,13 +80,14 @@ class Executor:
                 clob_order_id=order_id,
                 filled_shares=filled_shares,
                 avg_fill_price=avg_fill_price,
-                raw_response=response,
+                raw_response=response
+                | {"outcome_selection": trade.raw_payload.get("_outcome_selection")},
             )
             if filled_shares and avg_fill_price:
                 self._update_position_from_fill(trade, filled_shares, avg_fill_price)
         except Exception as exc:
             self.db.record_order(
-                trade.dedupe_key,
+                source_trade_key,
                 trade,
                 decision.copy_notional_usd,
                 None,

@@ -10,7 +10,8 @@ from crowding import CrowdingAnalyzer
 from db import Database
 from decision_engine import DecisionEngine
 from execution import Executor
-from models import RedemptionEvent, TradeEvent
+from models import OutcomeSelectionMode, RedemptionEvent, TradeEvent
+from outcome_selection import OutcomeSelectionError, OutcomeSelector
 from polymarket_data import PolymarketDataClient
 from redemption import RedemptionExecutor
 from resolution import ResolutionScanner
@@ -29,6 +30,7 @@ class PollingIngestor:
         redemption_executor: RedemptionExecutor | None = None,
         resolution_scanner: ResolutionScanner | None = None,
         crowding_analyzer: CrowdingAnalyzer | None = None,
+        outcome_selector: OutcomeSelector | None = None,
     ):
         self.settings = settings
         self.db = db
@@ -38,6 +40,7 @@ class PollingIngestor:
         self.resolution_scanner = resolution_scanner
         self.redemption_executor = redemption_executor or RedemptionExecutor(resolution_scanner)
         self.crowding_analyzer = crowding_analyzer
+        self.outcome_selector = outcome_selector
         self.running = True
         self.seeded_wallets: set[str] = set()
         self._last_resolution_scan = 0.0
@@ -147,11 +150,35 @@ class PollingIngestor:
                 self.db.log_error("crowding", exc, trade.raw_payload)
 
         try:
-            decision = self.decision_engine.decide(trade, crowding_score)
+            selected_trade = self._select_outcome(trade)
+        except OutcomeSelectionError as exc:
+            reason = str(exc)
+            details = {
+                "outcome_selection_mode": self.settings.outcome_selection_mode.value,
+                "source_asset_id": trade.asset_id or trade.token_id,
+                "source_outcome": trade.outcome,
+                "source_price": trade.price,
+            }
+            logger.info("copy decision=False reason=%s", reason)
+            self.db.record_copy_decision(trade, False, reason, details)
+            self.db.freeze_source_token_for_trade(trade, reason)
+            return True
+        except Exception as exc:
+            logger.exception("outcome selection failed")
+            self.db.freeze_source_token_for_trade(trade, str(exc))
+            self.db.log_error("outcome_selection", exc, trade.raw_payload)
+            return True
+
+        try:
+            decision = self.decision_engine.decide(
+                selected_trade,
+                crowding_score,
+                source_trade=trade,
+            )
             logger.info("copy decision=%s reason=%s", decision.should_copy, decision.reason)
             self.db.record_copy_decision(trade, decision.should_copy, decision.reason, decision.details)
             if decision.should_copy:
-                self.executor.execute(trade, decision)
+                self.executor.execute(selected_trade, decision, source_trade_key=trade.dedupe_key)
                 self.db.record_copied_source_trade(trade)
             else:
                 self.db.freeze_source_token_for_trade(trade, decision.reason)
@@ -160,6 +187,13 @@ class PollingIngestor:
             self.db.freeze_source_token_for_trade(trade, str(exc))
             self.db.log_error("process_trade", exc, trade.raw_payload)
         return True
+
+    def _select_outcome(self, trade: TradeEvent) -> TradeEvent:
+        if self.outcome_selector:
+            return self.outcome_selector.select(trade)
+        if self.settings.outcome_selection_mode != OutcomeSelectionMode.SOURCE:
+            raise OutcomeSelectionError("inverse outcome selector is not configured")
+        return trade
 
     def process_redemption(self, redemption: RedemptionEvent) -> bool:
         inserted = self.db.insert_redemption(redemption)

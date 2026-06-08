@@ -58,9 +58,10 @@ Important `.env` values:
 - `SELL_SIZING_MODE`: defaults to `source_position_ratio`; copied sells reduce local exposure proportionally to the source's observed position reduction.
 - `ON_RISK_MISMATCH`: defaults to `freeze_token`; stop copying a token if a tracked source buy/sell cannot be copied.
 - `SOURCE_POSITION_SIZE_THRESHOLD`: minimum source position size to treat as pre-existing at startup.
+- `OUTCOME_SELECTION_MODE`: `source` copies the traded outcome; `inverse_up_down` copies the authoritative opposite token only for strict two-outcome `Up`/`Down` markets.
 - `MAX_TRADE_USD`: max copied notional per trade.
 - `COPY_RATIO`: copied fraction of source notional.
-- `MAX_SLIPPAGE_CENTS`: max worse price versus source trade.
+- `MAX_SLIPPAGE_CENTS`: max worse price versus the selected outcome's reference price.
 - `MAX_BUY_PRICE`: optional maximum executable price for copied buys.
 - `MAX_SECONDS_UNTIL_MARKET_END`: optional maximum time until the advertised market end; buys with missing end metadata are skipped.
 - `MIN_TRADE_USD`: ignore source trades below this.
@@ -109,7 +110,9 @@ Live mode refuses to start unless:
 - `MAX_TRADE_USD` is set.
 - `COPY_RATIO <= 1`, unless `ALLOW_COPY_RATIO_GT_ONE=true`.
 
-If a file named `STOP_TRADING` exists in the project root, orders are not placed.
+If a file named `STOP_TRADING` exists in the project root, new dry-run and live BUY/SELL orders are blocked while the polling loop and resolution scanner continue running. Already-submitted live orders are not cancelled. Trades observed while stopped are recorded as blocked and are not retried after the file is removed.
+
+Current limitation: a blocked trade still advances the tracked source-token lifecycle even though no copied order was executed. Treat `STOP_TRADING` as a one-way emergency stop for the current run rather than relying on repeated stop/resume cycles.
 
 ## Tests
 

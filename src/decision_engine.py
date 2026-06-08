@@ -60,19 +60,33 @@ class DecisionEngine:
         self.balance_provider = balance_provider
         self.market_end_provider = market_end_provider
 
-    def decide(self, trade: TradeEvent, crowding_score: CrowdingScore | None = None) -> CopyDecision:
+    def decide(
+        self,
+        trade: TradeEvent,
+        crowding_score: CrowdingScore | None = None,
+        source_trade: TradeEvent | None = None,
+    ) -> CopyDecision:
+        source_trade = source_trade or trade
         decision_time = utc_now()
         details = {
             "decision_time": decision_time.isoformat(),
-            "source_price": trade.price,
-            "source_notional_usd": trade.notional_usd,
+            "source_price": source_trade.price,
+            "reference_price": trade.price,
+            "source_outcome": source_trade.outcome,
+            "copied_outcome": trade.outcome,
+            "source_asset_id": source_trade.asset_id or source_trade.token_id,
+            "copied_asset_id": trade.asset_id or trade.token_id,
+            "outcome_selection_mode": (
+                trade.raw_payload.get("_outcome_selection", {}).get("mode", "source")
+            ),
+            "source_notional_usd": source_trade.notional_usd,
             "side": trade.side.value,
         }
-        age = (decision_time - trade.timestamp.astimezone(timezone.utc)).total_seconds()
+        age = (decision_time - source_trade.timestamp.astimezone(timezone.utc)).total_seconds()
         details["trade_age_seconds"] = age
         if age > self.settings.max_trade_age_seconds:
             return _reject(f"trade too old: {age:.1f}s", details)
-        if trade.notional_usd < self.settings.min_trade_usd:
+        if source_trade.notional_usd < self.settings.min_trade_usd:
             return _reject("below MIN_TRADE_USD", details)
         title = (trade.market_title or "").lower()
         for keyword in self.settings.block_market_keywords:
@@ -85,7 +99,7 @@ class DecisionEngine:
         if not token_id:
             return _reject("missing token_id/asset_id", details)
 
-        source_state = self.db.get_source_token_state_for_trade(trade)
+        source_state = self.db.get_source_token_state_for_trade(source_trade)
         if source_state and source_state["status"] == SourceTokenStatus.PRE_EXISTING.value:
             return _reject("source held token before bot startup", details)
         if source_state and source_state["status"] == SourceTokenStatus.FROZEN.value:
@@ -125,9 +139,12 @@ class DecisionEngine:
         )
 
         if not passes_slippage(trade.side, trade.price, executable, self.settings.max_slippage_cents):
+            price_context = f"source={source_trade.price:.4f}"
+            if (source_trade.asset_id or source_trade.token_id) != token_id:
+                price_context += f" reference={trade.price:.4f}"
             return _reject(
                 (
-                    f"slippage check failed: source={trade.price:.4f} executable={executable:.4f} "
+                    f"slippage check failed: {price_context} executable={executable:.4f} "
                     f"difference={slippage_cents:.2f}c allowed={allowed:.4f}"
                 ),
                 details,
@@ -138,7 +155,7 @@ class DecisionEngine:
         copy_shares = None
         reason = "copy allowed"
         if trade.side == TradeSide.SELL and position and source_state:
-            sell_fraction = min(1.0, trade.size / source_state["observed_source_shares"])
+            sell_fraction = min(1.0, source_trade.size / source_state["observed_source_shares"])
             copy_shares = min(position.total_shares, position.total_shares * sell_fraction)
             copy_notional = copy_shares * executable
             if copy_shares <= 0:
@@ -149,9 +166,12 @@ class DecisionEngine:
             if self.settings.max_buy_price is not None:
                 details["max_buy_price"] = self.settings.max_buy_price
                 if executable > self.settings.max_buy_price:
+                    price_context = f"source={source_trade.price:.4f}"
+                    if (source_trade.asset_id or source_trade.token_id) != token_id:
+                        price_context += f" reference={trade.price:.4f}"
                     return _reject(
                         (
-                            f"maximum buy price exceeded: source={trade.price:.4f} "
+                            f"maximum buy price exceeded: {price_context} "
                             f"executable={executable:.4f} maximum={self.settings.max_buy_price:.4f}"
                         ),
                         details,
@@ -190,7 +210,7 @@ class DecisionEngine:
 
             position = self.db.get_position(trade_market_key(trade), token_id, trade.outcome or "")
             current_exposure = position.total_cost if position else 0.0
-            base_copy_notional = trade.notional_usd * self.settings.copy_ratio
+            base_copy_notional = source_trade.notional_usd * self.settings.copy_ratio
             caps = [base_copy_notional]
             if self.settings.max_trade_usd is not None:
                 caps.append(self.settings.max_trade_usd)

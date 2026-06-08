@@ -64,6 +64,7 @@ def summary() -> dict[str, Any]:
             "max_buy_price": settings.max_buy_price,
             "max_seconds_until_market_end": settings.max_seconds_until_market_end,
             "dry_run_starting_balance_usd": settings.dry_run_starting_balance_usd,
+            "outcome_selection_mode": settings.outcome_selection_mode.value,
             "daily_spend_cap_usd": settings.daily_spend_cap_usd,
             "trading_day_timezone": settings.trading_day_timezone,
             "per_market_exposure_cap_usd": settings.per_market_exposure_cap_usd,
@@ -237,11 +238,11 @@ def _copied_order_rows(db: Database, clob_client: PublicClobClient) -> list[dict
     for row in db.copied_order_rows(40):
         data = _row_dict(row)
         our_price = _order_entry_price(data)
-        source_price = data.get("source_price")
+        reference_price = data.get("reference_price")
         token_id = data.get("token_id")
         quote = _safe_quote(clob_client, token_id) if token_id else {}
         bid = quote.get("best_bid")
-        diff = our_price - source_price if our_price is not None and source_price is not None else None
+        diff = our_price - reference_price if our_price is not None and reference_price is not None else None
         mtm_pnl = None
         if bid is not None and data.get("source_side") == TradeSide.BUY.value and our_price is not None:
             requested_shares = data.get("requested_shares")
@@ -302,6 +303,7 @@ def _decision_detail_summary(details: dict[str, Any]) -> str:
     parts = []
     labels = (
         ("source_price", "source"),
+        ("reference_price", "reference"),
         ("executable_price", "executable"),
         ("slippage_cents", "slippage"),
         ("allowed_slippage_price", "allowed"),
@@ -752,11 +754,14 @@ HTML = """
         filters: [
           { key: "copied_order_status", label: "status", type: "select" },
           { key: "source_side", label: "side", type: "select" },
+          { key: "source_outcome", label: "source outcome", type: "select" },
+          { key: "copied_outcome", label: "copied outcome", type: "select" },
           { key: "market_title", label: "market", type: "text" },
         ],
         sorters: [
           { key: "copied_at", label: "copied at", type: "date" },
           { key: "source_price", label: "source px", type: "number" },
+          { key: "reference_price", label: "reference px", type: "number" },
           { key: "our_price", label: "our px", type: "number" },
           { key: "entry_diff", label: "diff", type: "number" },
           { key: "source_notional_usd", label: "source $", type: "number" },
@@ -1286,7 +1291,9 @@ HTML = """
         ${cell(row.copied_order_status)}
         ${cell(row.source_side)}
         ${cell(row.source_outcome)}
+        ${cell(row.copied_outcome)}
         ${num(row.source_price, fmt.price)}
+        ${num(row.reference_price, fmt.price)}
         ${num(row.our_price, fmt.price)}
         ${num(row.entry_diff, fmt.price, priceDiffClass(row))}
         ${num(row.source_notional_usd)}
@@ -1298,8 +1305,10 @@ HTML = """
       </tr>`);
       document.getElementById("orders").innerHTML = tableControls("orders", data.copied_orders) + table(
         [
-          {label: "copied at"}, {label: "status"}, {label: "side"}, {label: "outcome"},
-          {label: "source px", cls: "num"}, {label: "our px", cls: "num"},
+          {label: "copied at"}, {label: "status"}, {label: "side"},
+          {label: "source outcome"}, {label: "copied outcome"},
+          {label: "source px", cls: "num"}, {label: "reference px", cls: "num"},
+          {label: "our px", cls: "num"},
           {label: "diff", cls: "num"}, {label: "source $", cls: "num"},
           {label: "our $", cls: "num"}, {label: "our shares", cls: "num"},
           {label: "bid", cls: "num"}, {label: "our mtm pnl", cls: "num"}, {label: "market"}

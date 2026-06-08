@@ -17,6 +17,7 @@ from funds import DryRunBalanceProvider, LiveCollateralBalanceProvider
 from ingestion import PollingIngestor
 from models import CopyMode, utc_now
 from models import TradeSide
+from outcome_selection import OutcomeSelector
 from polymarket_clob import PublicClobClient
 from polymarket_data import PolymarketDataClient
 from polymarket_gamma import GammaClient
@@ -65,6 +66,7 @@ def run(settings: Settings, risk_flag: bool = False) -> None:
         Executor(settings, db),
         resolution_scanner=ResolutionScanner(settings, db, gamma_client),
         crowding_analyzer=crowding,
+        outcome_selector=OutcomeSelector(settings.outcome_selection_mode, gamma_client),
     )
     ingestor.run_forever()
 
@@ -304,8 +306,10 @@ def show_orders(limit: int = typer.Option(20, min=1, max=200)) -> None:
         "copied at",
         "status",
         "side",
-        "outcome",
+        "source outcome",
+        "copied outcome",
         "source px",
+        "reference px",
         "our px",
         "diff",
         "source $",
@@ -320,7 +324,8 @@ def show_orders(limit: int = typer.Option(20, min=1, max=200)) -> None:
     for row in db.copied_order_rows(limit):
         our_price = _order_entry_price(row)
         source_price = row["source_price"]
-        diff = None if our_price is None or source_price is None else our_price - source_price
+        reference_price = row["reference_price"]
+        diff = None if our_price is None or reference_price is None else our_price - reference_price
         token_id = row["token_id"]
         bid = None
         mtm_pnl = None
@@ -336,7 +341,9 @@ def show_orders(limit: int = typer.Option(20, min=1, max=200)) -> None:
             row["copied_order_status"],
             row["source_side"] or "",
             row["source_outcome"] or "",
+            row["copied_outcome"] or "",
             "" if source_price is None else f"{source_price:.4f}",
+            "" if reference_price is None else f"{reference_price:.4f}",
             "" if our_price is None else f"{our_price:.4f}",
             "" if diff is None else f"{diff:+.4f}",
             "" if row["source_notional_usd"] is None else f"{row['source_notional_usd']:.2f}",

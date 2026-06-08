@@ -20,6 +20,12 @@ class MarketResolution:
         return self.payout_by_token_id.get(str(token_id))
 
 
+@dataclass(frozen=True)
+class OutcomeToken:
+    token_id: str
+    outcome: str
+
+
 class GammaClient:
     def __init__(
         self,
@@ -64,6 +70,21 @@ class GammaClient:
             return None
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         return parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+    def get_up_down_tokens(
+        self,
+        market_id: str,
+        asset_id: str,
+        condition_id: str | None = None,
+    ) -> tuple[OutcomeToken, OutcomeToken] | None:
+        condition = condition_id or market_id
+        if _looks_like_condition_id(condition):
+            clob_payload = self._get_clob_market_by_condition_id(condition)
+            pair = _up_down_tokens_from_clob(clob_payload)
+            if pair:
+                return pair
+        payload = self._find_market(market_id, asset_id, condition_id)
+        return _up_down_tokens_from_gamma(payload)
 
     @retry(wait=wait_exponential(multiplier=1, min=1, max=10), stop=stop_after_attempt(4))
     def _get_clob_market_by_condition_id(self, condition_id: str) -> dict[str, Any] | None:
@@ -173,6 +194,48 @@ def _clob_market_resolution(payload: dict[str, Any]) -> MarketResolution:
         market_title=payload.get("question") or payload.get("market_slug") or payload.get("condition_id"),
         raw_payload=payload,
     )
+
+
+def _up_down_tokens_from_clob(
+    payload: dict[str, Any] | None,
+) -> tuple[OutcomeToken, OutcomeToken] | None:
+    if not payload or not isinstance(payload.get("tokens"), list):
+        return None
+    tokens = []
+    for item in payload["tokens"]:
+        if not isinstance(item, dict):
+            return None
+        token_id = item.get("token_id") or item.get("tokenId")
+        outcome = item.get("outcome")
+        if token_id is None or outcome is None:
+            return None
+        tokens.append(OutcomeToken(str(token_id), str(outcome)))
+    return _validated_up_down_pair(tokens)
+
+
+def _up_down_tokens_from_gamma(
+    payload: dict[str, Any] | None,
+) -> tuple[OutcomeToken, OutcomeToken] | None:
+    if not payload:
+        return None
+    token_ids = [str(item) for item in _decode_list(payload.get("clobTokenIds"))]
+    outcomes = [str(item) for item in _decode_list(payload.get("outcomes"))]
+    if len(token_ids) != len(outcomes):
+        return None
+    return _validated_up_down_pair(
+        [OutcomeToken(token_id, outcome) for token_id, outcome in zip(token_ids, outcomes)]
+    )
+
+
+def _validated_up_down_pair(tokens: list[OutcomeToken]) -> tuple[OutcomeToken, OutcomeToken] | None:
+    if len(tokens) != 2:
+        return None
+    by_outcome = {token.outcome.strip().casefold(): token for token in tokens}
+    if set(by_outcome) != {"up", "down"}:
+        return None
+    if by_outcome["up"].token_id == by_outcome["down"].token_id:
+        return None
+    return by_outcome["up"], by_outcome["down"]
 
 
 def _decode_list(value: Any) -> list[Any]:

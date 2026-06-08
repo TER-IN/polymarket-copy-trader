@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from models import CopyMode, RiskMismatchPolicy, SellSizingMode, SourcePositionPolicy
+from models import CopyMode, OutcomeSelectionMode, RiskMismatchPolicy, SellSizingMode, SourcePositionPolicy
 
 
 class Settings(BaseSettings):
@@ -37,6 +37,10 @@ class Settings(BaseSettings):
         alias="ON_RISK_MISMATCH",
     )
     source_position_size_threshold: float = Field(default=0.01, alias="SOURCE_POSITION_SIZE_THRESHOLD")
+    outcome_selection_mode: OutcomeSelectionMode = Field(
+        default=OutcomeSelectionMode.SOURCE,
+        alias="OUTCOME_SELECTION_MODE",
+    )
 
     max_trade_usd: float | None = Field(default=None, alias="MAX_TRADE_USD")
     copy_ratio: float = Field(default=0.25, alias="COPY_RATIO")

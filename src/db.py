@@ -847,27 +847,55 @@ class Database:
                     """
                     SELECT
                       cp.*,
-                      (
-                        SELECT tt.market_title
-                        FROM target_trades tt
-                        WHERE (tt.market_id = cp.market_id OR tt.condition_id = cp.market_id)
-                          AND (tt.asset_id = cp.asset_id OR tt.token_id = cp.asset_id)
-                          AND COALESCE(tt.outcome, '') = COALESCE(cp.outcome, '')
-                        ORDER BY tt.timestamp DESC
-                        LIMIT 1
-                      ) AS market_title,
-                      (
-                        SELECT COALESCE(
-                          json_extract(tt.raw_payload, '$.eventSlug'),
-                          json_extract(tt.raw_payload, '$.event_slug'),
-                          json_extract(tt.raw_payload, '$.slug')
+                      COALESCE(
+                        (
+                          SELECT tt.market_title
+                          FROM copied_orders co
+                          JOIN target_trades tt ON tt.dedupe_key = co.source_trade_key
+                          WHERE co.market_id = cp.market_id
+                            AND co.asset_id = cp.asset_id
+                            AND COALESCE(co.outcome, '') = COALESCE(cp.outcome, '')
+                          ORDER BY co.created_at DESC
+                          LIMIT 1
+                        ),
+                        (
+                          SELECT tt.market_title
+                          FROM target_trades tt
+                          WHERE (tt.market_id = cp.market_id OR tt.condition_id = cp.market_id)
+                            AND (tt.asset_id = cp.asset_id OR tt.token_id = cp.asset_id)
+                            AND COALESCE(tt.outcome, '') = COALESCE(cp.outcome, '')
+                          ORDER BY tt.timestamp DESC
+                          LIMIT 1
                         )
-                        FROM target_trades tt
-                        WHERE (tt.market_id = cp.market_id OR tt.condition_id = cp.market_id)
-                          AND (tt.asset_id = cp.asset_id OR tt.token_id = cp.asset_id)
-                          AND COALESCE(tt.outcome, '') = COALESCE(cp.outcome, '')
-                        ORDER BY tt.timestamp DESC
-                        LIMIT 1
+                      ) AS market_title,
+                      COALESCE(
+                        (
+                          SELECT COALESCE(
+                            json_extract(tt.raw_payload, '$.eventSlug'),
+                            json_extract(tt.raw_payload, '$.event_slug'),
+                            json_extract(tt.raw_payload, '$.slug')
+                          )
+                          FROM copied_orders co
+                          JOIN target_trades tt ON tt.dedupe_key = co.source_trade_key
+                          WHERE co.market_id = cp.market_id
+                            AND co.asset_id = cp.asset_id
+                            AND COALESCE(co.outcome, '') = COALESCE(cp.outcome, '')
+                          ORDER BY co.created_at DESC
+                          LIMIT 1
+                        ),
+                        (
+                          SELECT COALESCE(
+                            json_extract(tt.raw_payload, '$.eventSlug'),
+                            json_extract(tt.raw_payload, '$.event_slug'),
+                            json_extract(tt.raw_payload, '$.slug')
+                          )
+                          FROM target_trades tt
+                          WHERE (tt.market_id = cp.market_id OR tt.condition_id = cp.market_id)
+                            AND (tt.asset_id = cp.asset_id OR tt.token_id = cp.asset_id)
+                            AND COALESCE(tt.outcome, '') = COALESCE(cp.outcome, '')
+                          ORDER BY tt.timestamp DESC
+                          LIMIT 1
+                        )
                       ) AS event_slug
                     FROM copied_positions cp
                     ORDER BY cp.updated_at DESC
@@ -918,11 +946,16 @@ class Database:
                       tt.source_wallet,
                       tt.side AS source_side,
                       tt.outcome AS source_outcome,
+                      co.outcome AS copied_outcome,
                       tt.price AS source_price,
+                      CASE
+                        WHEN COALESCE(tt.asset_id, tt.token_id) <> co.asset_id THEN 1.0 - tt.price
+                        ELSE tt.price
+                      END AS reference_price,
                       tt.size AS source_size,
                       tt.notional_usd AS source_notional_usd,
                       tt.market_title,
-                      COALESCE(tt.asset_id, tt.token_id, co.asset_id) AS token_id
+                      co.asset_id AS token_id
                     FROM copied_orders co
                     LEFT JOIN target_trades tt ON tt.dedupe_key = co.source_trade_key
                     ORDER BY co.created_at DESC

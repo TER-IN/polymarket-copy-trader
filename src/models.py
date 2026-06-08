@@ -41,6 +41,11 @@ class RiskMismatchPolicy(StrEnum):
     FREEZE_TOKEN = "freeze_token"
 
 
+class OutcomeSelectionMode(StrEnum):
+    SOURCE = "source"
+    INVERSE_UP_DOWN = "inverse_up_down"
+
+
 @dataclass(frozen=True)
 class TradeEvent:
     source_wallet: str

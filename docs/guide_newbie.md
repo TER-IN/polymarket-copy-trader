@@ -278,6 +278,28 @@ For example, a source buy at `0.89` and executable copy price of `0.905` can pas
 
 The Source States dashboard stores the decision-time source price, executable price, allowed slippage price, and calculated slippage. These are historical snapshots, not quotes fetched later.
 
+### Inverse Up/Down mode
+
+By default, the bot copies the source trader's selected outcome:
+
+```env
+OUTCOME_SELECTION_MODE=source
+```
+
+For an experimental contrarian dry-run, you can select the opposite outcome on strict two-outcome `Up`/`Down` markets:
+
+```env
+OUTCOME_SELECTION_MODE=inverse_up_down
+```
+
+In this mode, a source `BUY Down` becomes a copied `BUY Up`, and a later source `SELL Down` reduces the copied `Up` position. The reverse applies to source `Up` trades.
+
+The bot does not infer the opposite token from the market title. It queries authoritative market metadata and proceeds only when there are exactly two labeled outcomes, `Up` and `Down`, with distinct token IDs. Other binary markets, multi-outcome markets, missing metadata, and source tokens outside the returned pair are rejected.
+
+For slippage, the inverse reference price is `1 - source price`. For example, if the source buys `Down` at `0.60`, the copied `Up` reference is `0.40`; the current `Up` ask is compared with `0.40`. All liquidity, maximum buy price, exposure, balance, execution, position, and settlement logic uses the copied token. The Copied Orders tab shows source outcome, copied outcome, source price, and inverse reference price separately.
+
+This mode bets against the source trader and should be evaluated as a separate strategy. It is disabled by default.
+
 ## 11. BUY vs SELL Behavior
 
 This project treats buys and sells differently.
@@ -605,7 +627,8 @@ Settings affect different parts of the problem:
 
 - `COPY_RATIO`: controls position size.
 - `MAX_TRADE_USD`: caps dollars per copied trade.
-- `MAX_SLIPPAGE_CENTS`: controls how much worse your entry may be than the source trader's entry.
+- `MAX_SLIPPAGE_CENTS`: controls how much worse your entry may be than the selected outcome's reference price.
+- `OUTCOME_SELECTION_MODE`: optionally selects the authoritative opposite token for strict `Up`/`Down` markets.
 - `MAX_BUY_PRICE`: rejects copied buys above an absolute outcome-token price.
 - `MAX_SECONDS_UNTIL_MARKET_END`: restricts buys to markets whose advertised end is close enough.
 - `DRY_RUN_STARTING_BALANCE_USD`: simulates replenishable available collateral in dry-run mode.
@@ -749,7 +772,11 @@ Emergency stop:
 touch STOP_TRADING
 ```
 
-If `STOP_TRADING` exists, the project will not place orders.
+If `STOP_TRADING` exists, the project blocks new dry-run and live BUY/SELL orders but keeps running. Wallet polling and periodic resolution scanning continue, so existing dry-run positions can still settle and live winners can still be marked `redeem_required`. The file does not cancel live orders that were already submitted.
+
+Trades observed while the stop file exists are stored with copied-order status `blocked` and are not retried after trading is enabled again.
+
+Current limitation: the bot still advances its tracked source-token lifecycle for a blocked trade even though no copied order was executed. This can make a later stop/resume sequence disagree with the local copied position. Use this mechanism as an emergency stop for the current run, not as a routine pause/resume control.
 
 Remove it only when you intentionally want to allow trading again:
 

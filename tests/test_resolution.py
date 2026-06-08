@@ -82,6 +82,54 @@ def test_gamma_client_uses_clob_market_resolution_for_closed_condition() -> None
     assert resolution.payout_for_token("up") == 1.0
 
 
+def test_gamma_client_reads_strict_up_down_token_pair_from_clob() -> None:
+    class FakePairGamma(FakeLookupGamma):
+        def _get_clob_market_by_condition_id(self, condition_id: str):
+            return {
+                "tokens": [
+                    {"token_id": "up", "outcome": "Up"},
+                    {"token_id": "down", "outcome": "Down"},
+                ]
+            }
+
+    pair = FakePairGamma().get_up_down_tokens("0x" + "d" * 64, "down")
+
+    assert pair is not None
+    assert [(token.token_id, token.outcome) for token in pair] == [("up", "Up"), ("down", "Down")]
+
+
+def test_gamma_client_rejects_non_up_down_pair() -> None:
+    class FakePairGamma(FakeLookupGamma):
+        def _get_clob_market_by_condition_id(self, condition_id: str):
+            return {
+                "tokens": [
+                    {"token_id": "yes", "outcome": "Yes"},
+                    {"token_id": "no", "outcome": "No"},
+                ]
+            }
+
+        def _find_market(self, market_id: str, asset_id: str, condition_id: str | None):
+            return None
+
+    assert FakePairGamma().get_up_down_tokens("0x" + "e" * 64, "no") is None
+
+
+def test_gamma_client_rejects_up_down_pair_with_duplicate_token_id() -> None:
+    class FakePairGamma(FakeLookupGamma):
+        def _get_clob_market_by_condition_id(self, condition_id: str):
+            return {
+                "tokens": [
+                    {"token_id": "same", "outcome": "Up"},
+                    {"token_id": "same", "outcome": "Down"},
+                ]
+            }
+
+        def _find_market(self, market_id: str, asset_id: str, condition_id: str | None):
+            return None
+
+    assert FakePairGamma().get_up_down_tokens("0x" + "f" * 64, "same") is None
+
+
 def test_gamma_client_reads_advertised_market_end_time() -> None:
     class FakeEndTimeGamma(GammaClient):
         def _find_market(self, market_id: str, asset_id: str, condition_id: str | None):
