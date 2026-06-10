@@ -236,3 +236,27 @@ def test_processed_trade_records_precise_observation_and_decision_timing(tmp_pat
     assert details["decision_completed_at"]
     assert details["decision_processing_ms"] >= 0
     assert details["observation_delay_seconds"] >= 0
+
+
+def test_market_freeze_rejection_does_not_freeze_opposite_token_state(tmp_path) -> None:
+    class MarketFreezeDecision:
+        def decide(self, trade, crowding_score=None, source_trade=None):
+            return CopyDecision(
+                False,
+                "source wallet market frozen: earlier slippage check failed",
+                details={},
+            )
+
+    settings = Settings(enable_crowding_check=False)
+    db = Database(tmp_path / "db.sqlite3")
+    ingestor = PollingIngestor(
+        settings,
+        db,
+        FakeDataClient([]),
+        MarketFreezeDecision(),
+        FakeExecutor(),
+    )
+    trade = make_trade()
+
+    assert ingestor.process_trade(trade)
+    assert db.get_source_token_state_for_trade(trade) is None

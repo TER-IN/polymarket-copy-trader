@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from config import Settings
 from db import Database
 from decision_engine import calculate_copy_size, passes_slippage, DecisionEngine
-from models import MarketTypeFilter, TradeEvent, TradeSide
+from models import MarketTypeFilter, RiskMismatchScope, TradeEvent, TradeSide
 from polymarket_clob import BookQuote
 from polymarket_gamma import MarketMetadata, OutcomeToken
 from positions import apply_buy
@@ -156,6 +156,60 @@ def test_market_title_allowlist_does_not_block_sell(tmp_path) -> None:
     decision = engine.decide(make_trade(TradeSide.SELL))
 
     assert decision.should_copy
+
+
+def test_wallet_market_mismatch_scope_blocks_opposite_outcome_buy(tmp_path) -> None:
+    settings = Settings(
+        risk_mismatch_scope=RiskMismatchScope.WALLET_MARKET,
+        max_seconds_until_market_end=None,
+        max_trade_age_seconds=60,
+    )
+    db = Database(tmp_path / "db.sqlite3")
+    rejected = replace(make_trade(), asset_id="down", token_id="down", outcome="Down")
+    db.freeze_source_token_for_trade(rejected, "slippage check failed")
+    opposite = replace(make_trade(), asset_id="up", token_id="up", outcome="Up")
+
+    decision = DecisionEngine(settings, db, FakeClob()).decide(opposite)
+
+    assert not decision.should_copy
+    assert decision.reason == "source wallet market frozen: slippage check failed"
+    assert decision.details["market_freeze"]["outcome"] == "Down"
+    assert db.get_source_token_state_for_trade(opposite) is None
+
+
+def test_token_mismatch_scope_allows_opposite_outcome_buy(tmp_path) -> None:
+    settings = Settings(
+        risk_mismatch_scope=RiskMismatchScope.TOKEN,
+        max_seconds_until_market_end=None,
+        max_trade_age_seconds=60,
+    )
+    db = Database(tmp_path / "db.sqlite3")
+    rejected = replace(make_trade(), asset_id="down", token_id="down", outcome="Down")
+    db.freeze_source_token_for_trade(rejected, "slippage check failed")
+    opposite = replace(make_trade(), asset_id="up", token_id="up", outcome="Up")
+
+    assert DecisionEngine(settings, db, FakeClob()).decide(opposite).should_copy
+
+
+def test_wallet_market_mismatch_scope_allows_sell_from_frozen_position(tmp_path) -> None:
+    settings = Settings(
+        risk_mismatch_scope=RiskMismatchScope.WALLET_MARKET,
+        max_trade_usd=100,
+        max_trade_age_seconds=60,
+    )
+    db = Database(tmp_path / "db.sqlite3")
+    buy = make_trade()
+    db.upsert_position(apply_buy(None, "m1", "tok1", "Yes", 20, 0.5, "0xabc"))
+    db.record_copied_source_trade(buy)
+    db.freeze_source_token_for_trade(buy, "later buy failed slippage")
+
+    decision = DecisionEngine(settings, db, FakeClob(bid=0.49)).decide(
+        replace(buy, transaction_hash="0xsell", side=TradeSide.SELL, size=25)
+    )
+
+    assert decision.should_copy
+    assert decision.reduce_only
+    assert decision.copy_shares == 5
 
 
 def test_decision_refuses_sell_without_position(tmp_path) -> None:

@@ -1,4 +1,5 @@
 from config import Settings
+from models import RiskMismatchScope
 
 
 def test_env_csv_wallets_parse(monkeypatch) -> None:
@@ -17,3 +18,9 @@ def test_empty_daily_spend_cap_means_unlimited(monkeypatch) -> None:
     monkeypatch.setenv("DAILY_SPEND_CAP_USD", "")
 
     assert Settings().daily_spend_cap_usd is None
+
+
+def test_wallet_market_risk_mismatch_scope_parses(monkeypatch) -> None:
+    monkeypatch.setenv("RISK_MISMATCH_SCOPE", "wallet_market")
+
+    assert Settings().risk_mismatch_scope == RiskMismatchScope.WALLET_MARKET

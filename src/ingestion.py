@@ -241,6 +241,7 @@ def _should_freeze_rejection(reason: str) -> bool:
         "market end time",
         "market is not an authoritative",
         "per-market exposure cap exhausted",
+        "source wallet market frozen",
         "trade too old",
         "Up/Down market duration",
     )

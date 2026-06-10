@@ -38,7 +38,7 @@ def summary() -> dict[str, Any]:
 
     positions, position_totals = _position_rows(db, clob_client)
     copied_orders = _copied_order_rows(db, clob_client)
-    copied_redemptions = [_row_dict(row) for row in db.copied_redemption_rows(40)]
+    copied_redemptions = _copied_redemption_rows(db)
     recent_trades = [_row_dict(row) for row in db.recent_trades(25)]
     source_states = [_row_dict(row) for row in db.source_token_states(limit=50)]
     errors = [_row_dict(row) for row in db.recent_errors(20)]
@@ -79,6 +79,7 @@ def summary() -> dict[str, Any]:
             "source_position_policy": settings.source_position_policy.value,
             "sell_sizing_mode": settings.sell_sizing_mode.value,
             "on_risk_mismatch": settings.on_risk_mismatch.value,
+            "risk_mismatch_scope": settings.risk_mismatch_scope.value,
         },
         "totals": {
             **position_totals,
@@ -130,6 +131,14 @@ def _apply_source_state_market_labels(rows: list[dict[str, Any]], db: Database) 
     for row in rows:
         title = titles.get(str(row.get("last_source_trade_key") or ""))
         row["market_label"] = title or row.get("market_id") or ""
+
+
+def _copied_redemption_rows(db: Database) -> list[dict[str, Any]]:
+    rows = [_row_dict(row) for row in db.copied_redemption_rows(None)]
+    for row in rows:
+        row["market_title"] = row.get("market_title") or "Unknown market"
+        row["market_url"] = _polymarket_market_url(row.get("event_slug"))
+    return rows
 
 
 def _source_performance(wallets: list[str], db: Database, pnl_client: UserPnlClient) -> list[dict[str, Any]]:
@@ -243,6 +252,7 @@ def _position_rows(db: Database, clob_client: PublicClobClient) -> tuple[list[di
                 "realized": realized,
                 "total": total,
                 "status": display_status,
+                "position_created_at": row["position_created_at"],
                 "market_end_time": row["market_end_time"],
                 "resolution_checked_at": row["resolution_checked_at"],
                 "market_title": row["market_title"] or row["market_id"],
@@ -781,6 +791,7 @@ HTML = """
           { key: "market_title", label: "market", type: "text" },
         ],
         sorters: [
+          { key: "position_created_at", label: "created", type: "date" },
           { key: "shares", label: "shares", type: "number" },
           { key: "avg_entry_price", label: "avg", type: "number" },
           { key: "cost", label: "cost", type: "number" },
@@ -1099,6 +1110,7 @@ HTML = """
     function renderPositions(data) {
       const sourceRows = filteredAndSorted("positions", data.positions);
       const rows = sourceRows.map(row => `<tr>
+        ${cell(fmt.time(row.position_created_at))}
         ${cell(row.outcome)}
         ${num(row.shares, fmt.shares)}
         ${num(row.avg_entry_price, fmt.price)}
@@ -1116,7 +1128,7 @@ HTML = """
       </tr>`);
       document.getElementById("positions").innerHTML = tableControls("positions", data.positions) + table(
         [
-          {label: "outcome"}, {label: "shares", cls: "num"}, {label: "avg", cls: "num"},
+          {label: "created"}, {label: "outcome"}, {label: "shares", cls: "num"}, {label: "avg", cls: "num"},
           {label: "cost", cls: "num"}, {label: "bid", cls: "num"}, {label: "ask", cls: "num"},
           {label: "est value", cls: "num"}, {label: "unrealized", cls: "num"},
           {label: "realized", cls: "num"}, {label: "total", cls: "num"}, {label: "status"}, {label: "market"}
@@ -1367,11 +1379,7 @@ HTML = """
     }
 
     function renderRedemptions(data) {
-      const rowsForControls = data.copied_redemptions.map(row => ({
-        ...row,
-        market_title: row.market_title || row.market_id,
-      }));
-      const sourceRows = filteredAndSorted("redemptions", rowsForControls);
+      const sourceRows = filteredAndSorted("redemptions", data.copied_redemptions);
       const rows = sourceRows.map(row => `<tr>
         ${cell(fmt.time(row.created_at))}
         ${cell(row.status)}
@@ -1379,10 +1387,12 @@ HTML = """
         ${num(row.payout_usd)}
         ${num(row.realized_pnl, fmt.money, pnlClass(row.realized_pnl))}
         ${num(row.source_payout_usd)}
-        <td class="market">${fmt.text(row.market_title || row.market_id)}</td>
+        <td class="market">${row.market_url
+          ? `<a href="${fmt.text(row.market_url)}" target="_blank" rel="noopener noreferrer">${fmt.text(row.market_title)}</a>`
+          : fmt.text(row.market_title)}</td>
         ${cell(row.error_message)}
       </tr>`);
-      document.getElementById("redemptions").innerHTML = tableControls("redemptions", rowsForControls) + table(
+      document.getElementById("redemptions").innerHTML = tableControls("redemptions", data.copied_redemptions) + table(
         [
           {label: "created"}, {label: "status"}, {label: "shares", cls: "num"},
           {label: "payout", cls: "num"}, {label: "realized", cls: "num"},

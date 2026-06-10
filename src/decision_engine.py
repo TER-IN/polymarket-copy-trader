@@ -6,7 +6,16 @@ from typing import Any, Protocol
 from config import Settings
 from db import Database
 from funds import BalanceProvider, BalanceUnavailableError
-from models import CopyDecision, CrowdingScore, MarketTypeFilter, SourceTokenStatus, TradeEvent, TradeSide, utc_now
+from models import (
+    CopyDecision,
+    CrowdingScore,
+    MarketTypeFilter,
+    RiskMismatchScope,
+    SourceTokenStatus,
+    TradeEvent,
+    TradeSide,
+    utc_now,
+)
 from polymarket_clob import BookFill, ExecutionEstimate, PublicClobClient
 from polymarket_gamma import MarketMetadata
 
@@ -107,6 +116,7 @@ class DecisionEngine:
                 "per_market_exposure_cap_usd": self.settings.per_market_exposure_cap_usd,
                 "outcome_selection_mode": self.settings.outcome_selection_mode.value,
                 "allow_market_title_keywords": self.settings.allow_market_title_keywords,
+                "risk_mismatch_scope": self.settings.risk_mismatch_scope.value,
             },
         }
         age = (decision_time - source_trade.timestamp.astimezone(timezone.utc)).total_seconds()
@@ -139,16 +149,40 @@ class DecisionEngine:
         if not token_id:
             return _reject("missing token_id/asset_id", details)
 
+        if (
+            trade.side == TradeSide.BUY
+            and self.settings.risk_mismatch_scope == RiskMismatchScope.WALLET_MARKET
+        ):
+            frozen_market_state = self.db.get_frozen_source_market_state_for_trade(source_trade)
+            if frozen_market_state:
+                reason = frozen_market_state["freeze_reason"] or "risk mismatch"
+                details["market_freeze"] = {
+                    "asset_id": frozen_market_state["asset_id"],
+                    "outcome": frozen_market_state["outcome"],
+                    "reason": reason,
+                }
+                return _reject(f"source wallet market frozen: {reason}", details)
+
         source_state = self.db.get_source_token_state_for_trade(source_trade)
         if source_state and source_state["status"] == SourceTokenStatus.PRE_EXISTING.value:
             return _reject("source held token before bot startup", details)
-        if source_state and source_state["status"] == SourceTokenStatus.FROZEN.value:
+        if (
+            source_state
+            and source_state["status"] == SourceTokenStatus.FROZEN.value
+            and not (
+                trade.side == TradeSide.SELL
+                and self.settings.risk_mismatch_scope == RiskMismatchScope.WALLET_MARKET
+            )
+        ):
             reason = source_state["freeze_reason"] or "risk mismatch"
             return _reject(f"source token frozen: {reason}", details)
 
         position = None
         if trade.side == TradeSide.SELL:
-            if not source_state or source_state["status"] != SourceTokenStatus.CLEAN.value:
+            allowed_sell_states = {SourceTokenStatus.CLEAN.value}
+            if self.settings.risk_mismatch_scope == RiskMismatchScope.WALLET_MARKET:
+                allowed_sell_states.add(SourceTokenStatus.FROZEN.value)
+            if not source_state or source_state["status"] not in allowed_sell_states:
                 return _reject("source token lifecycle not tracked from clean entry", details)
             if source_state["observed_source_shares"] <= 0:
                 return _reject("source observed position is zero", details)

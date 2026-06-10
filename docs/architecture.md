@@ -42,6 +42,11 @@ Copy decisions walk visible CLOB depth up to the slippage and absolute-price lim
 
 The optional market-title allowlist performs case-insensitive substring matching on BUY decisions only. SELL decisions bypass it so configuration changes cannot strand an existing copied position. The active allowlist is stored in each decision's strategy snapshot.
 
+With `RISK_MISMATCH_SCOPE=wallet_market`, any frozen token acts as a BUY-only
+market guard for that source wallet. Opposite-outcome BUYs are rejected without
+freezing an already-clean copied token, and risk-reducing SELLs remain capped by
+the local position.
+
 Short-duration filtering measures `eventStartTime` to `endDate`. Gamma's `startDate` is the market creation/listing time and is used only as a fallback when no event start is available.
 
 `target_trades.observed_at` and structured decision timing preserve polling and processing latency at sub-second precision. Every decision embeds the active strategy thresholds. `market_resolution_observations` stores authoritative token payout maps for all evaluated markets that have an advertised end time, not only markets with copied positions, so rejected decisions can be analyzed counterfactually.

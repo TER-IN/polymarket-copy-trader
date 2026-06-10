@@ -55,6 +55,32 @@ def test_position_dashboard_rows_include_event_slug(tmp_path) -> None:
     assert row["event_slug"] == "eth-updown-5m-1780776900"
 
 
+def test_position_dashboard_rows_include_first_successful_buy_time(tmp_path) -> None:
+    from positions import apply_buy
+
+    db = Database(tmp_path / "db.sqlite3")
+    trade = make_trade()
+    db.insert_trade(trade)
+    db.record_order(trade.dedupe_key, trade, 5, 10, 0.5, "dry_run")
+    later_trade = replace(trade, transaction_hash="0xlater")
+    db.insert_trade(later_trade)
+    db.record_order(later_trade.dedupe_key, later_trade, 5, 10, 0.5, "dry_run")
+    db.upsert_position(apply_buy(None, "m1", "tok1", "Yes", 20, 0.5, "0xabc"))
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE copied_orders SET created_at = ? WHERE source_trade_key = ?",
+            ("2026-06-09 09:10:00", trade.dedupe_key),
+        )
+        conn.execute(
+            "UPDATE copied_orders SET created_at = ? WHERE source_trade_key = ?",
+            ("2026-06-09 09:20:00", later_trade.dedupe_key),
+        )
+
+    row = db.position_dashboard_rows()[0]
+
+    assert row["position_created_at"] == "2026-06-09 09:10:00"
+
+
 def test_position_dashboard_rows_include_resolution_state(tmp_path) -> None:
     from positions import apply_buy
 
@@ -82,6 +108,30 @@ def test_position_dashboard_rows_include_resolution_state(tmp_path) -> None:
     assert row["market_end_time"] == "2026-06-08T15:00:00+00:00"
     assert row["resolution_resolved"] == 0
     assert row["resolution_checked_at"] is not None
+
+
+def test_copied_redemption_rows_can_return_all_with_trade_market_metadata(tmp_path) -> None:
+    db = Database(tmp_path / "db.sqlite3")
+    trade = replace(make_trade(), raw_payload={"eventSlug": "market-event"})
+    db.insert_trade(trade)
+    db.record_order(trade.dedupe_key, trade, 5, 10, 0.5, "dry_run")
+    with db.connect() as conn:
+        for index in range(45):
+            conn.execute(
+                """
+                INSERT INTO copied_redemptions (
+                  source_redemption_key, market_id, asset_id, outcome, shares,
+                  payout_usd, realized_pnl, status
+                ) VALUES (?, 'm1', 'tok1', 'Yes', 10, 10, 5, 'dry_run_resolution')
+                """,
+                (f"resolution:{index}",),
+            )
+
+    rows = db.copied_redemption_rows(None)
+
+    assert len(rows) == 45
+    assert rows[0]["market_title"] == "Market"
+    assert rows[0]["event_slug"] == "market-event"
 
 
 def test_freeze_source_token_preserves_original_reason(tmp_path) -> None:

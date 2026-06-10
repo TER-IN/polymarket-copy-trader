@@ -294,6 +294,23 @@ class Database:
                 (trade.source_wallet, asset_id, outcome),
             ).fetchone()
 
+    def get_frozen_source_market_state_for_trade(self, trade: TradeEvent) -> sqlite3.Row | None:
+        market_id = trade.market_id or trade.condition_id or ""
+        if not market_id:
+            return None
+        with self.connect() as conn:
+            return conn.execute(
+                """
+                SELECT * FROM source_token_states
+                WHERE lower(source_wallet) = lower(?)
+                  AND market_id = ?
+                  AND status = ?
+                ORDER BY updated_at ASC, id ASC
+                LIMIT 1
+                """,
+                (trade.source_wallet, market_id, SourceTokenStatus.FROZEN.value),
+            ).fetchone()
+
     def ensure_clean_source_token_state(self, trade: TradeEvent) -> sqlite3.Row | None:
         market_id = trade.market_id or trade.condition_id
         asset_id = trade.asset_id or trade.token_id
@@ -957,6 +974,15 @@ class Database:
                     """
                     SELECT
                       cp.*,
+                      (
+                        SELECT MIN(co.created_at)
+                        FROM copied_orders co
+                        WHERE co.market_id = cp.market_id
+                          AND co.asset_id = cp.asset_id
+                          AND COALESCE(co.outcome, '') = COALESCE(cp.outcome, '')
+                          AND co.side = 'BUY'
+                          AND co.status IN ('dry_run', 'submitted', 'filled', 'partial')
+                      ) AS position_created_at,
                       COALESCE(
                         (
                           SELECT tt.market_title
@@ -1100,24 +1126,77 @@ class Database:
                 )
             )
 
-    def copied_redemption_rows(self, limit: int = 50) -> list[sqlite3.Row]:
+    def copied_redemption_rows(self, limit: int | None = 50) -> list[sqlite3.Row]:
+        limit_clause = "LIMIT ?" if limit is not None else ""
+        params = (limit,) if limit is not None else ()
         with self.connect() as conn:
             return list(
                 conn.execute(
-                    """
+                    f"""
                     SELECT
                       cr.*,
                       sr.timestamp AS source_time,
                       sr.source_wallet,
                       sr.size AS source_size,
                       sr.payout_usd AS source_payout_usd,
-                      sr.market_title
+                      COALESCE(
+                        (
+                          SELECT tt.market_title
+                          FROM copied_orders co
+                          JOIN target_trades tt ON tt.dedupe_key = co.source_trade_key
+                          WHERE co.market_id = cr.market_id
+                            AND co.asset_id = cr.asset_id
+                            AND COALESCE(co.outcome, '') = COALESCE(cr.outcome, '')
+                          ORDER BY co.created_at DESC
+                          LIMIT 1
+                        ),
+                        (
+                          SELECT tt.market_title
+                          FROM target_trades tt
+                          WHERE (tt.market_id = cr.market_id OR tt.condition_id = cr.market_id)
+                            AND (tt.asset_id = cr.asset_id OR tt.token_id = cr.asset_id)
+                            AND COALESCE(tt.outcome, '') = COALESCE(cr.outcome, '')
+                          ORDER BY tt.timestamp DESC
+                          LIMIT 1
+                        ),
+                        json_extract(cr.raw_response, '$.market_title'),
+                        sr.market_title
+                      ) AS market_title,
+                      COALESCE(
+                        (
+                          SELECT COALESCE(
+                            json_extract(tt.raw_payload, '$.eventSlug'),
+                            json_extract(tt.raw_payload, '$.event_slug'),
+                            json_extract(tt.raw_payload, '$.slug')
+                          )
+                          FROM copied_orders co
+                          JOIN target_trades tt ON tt.dedupe_key = co.source_trade_key
+                          WHERE co.market_id = cr.market_id
+                            AND co.asset_id = cr.asset_id
+                            AND COALESCE(co.outcome, '') = COALESCE(cr.outcome, '')
+                          ORDER BY co.created_at DESC
+                          LIMIT 1
+                        ),
+                        (
+                          SELECT COALESCE(
+                            json_extract(tt.raw_payload, '$.eventSlug'),
+                            json_extract(tt.raw_payload, '$.event_slug'),
+                            json_extract(tt.raw_payload, '$.slug')
+                          )
+                          FROM target_trades tt
+                          WHERE (tt.market_id = cr.market_id OR tt.condition_id = cr.market_id)
+                            AND (tt.asset_id = cr.asset_id OR tt.token_id = cr.asset_id)
+                            AND COALESCE(tt.outcome, '') = COALESCE(cr.outcome, '')
+                          ORDER BY tt.timestamp DESC
+                          LIMIT 1
+                        )
+                      ) AS event_slug
                     FROM copied_redemptions cr
                     LEFT JOIN source_redemptions sr ON sr.dedupe_key = cr.source_redemption_key
                     ORDER BY cr.created_at DESC, cr.id DESC
-                    LIMIT ?
+                    {limit_clause}
                     """,
-                    (limit,),
+                    params,
                 )
             )
 

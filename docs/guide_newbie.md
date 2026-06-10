@@ -378,8 +378,14 @@ Relevant safe defaults:
 SOURCE_POSITION_POLICY=skip_preexisting
 SELL_SIZING_MODE=source_position_ratio
 ON_RISK_MISMATCH=freeze_token
+RISK_MISMATCH_SCOPE=wallet_market
 SOURCE_POSITION_SIZE_THRESHOLD=0.01
 ```
+
+`RISK_MISMATCH_SCOPE=token` freezes only the rejected outcome token.
+`wallet_market` is safer for paired or evolving strategies: after any token
+freezes, later BUYs for either outcome from that source wallet and market are
+rejected. SELLs may still reduce an existing copied position.
 
 Inspect lifecycle state with:
 

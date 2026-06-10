@@ -12,6 +12,7 @@ from models import (
     MarketTypeFilter,
     OutcomeSelectionMode,
     RiskMismatchPolicy,
+    RiskMismatchScope,
     SellSizingMode,
     SourcePositionPolicy,
 )
@@ -42,6 +43,10 @@ class Settings(BaseSettings):
     on_risk_mismatch: RiskMismatchPolicy = Field(
         default=RiskMismatchPolicy.FREEZE_TOKEN,
         alias="ON_RISK_MISMATCH",
+    )
+    risk_mismatch_scope: RiskMismatchScope = Field(
+        default=RiskMismatchScope.TOKEN,
+        alias="RISK_MISMATCH_SCOPE",
     )
     source_position_size_threshold: float = Field(default=0.01, alias="SOURCE_POSITION_SIZE_THRESHOLD")
     outcome_selection_mode: OutcomeSelectionMode = Field(

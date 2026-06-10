@@ -57,6 +57,7 @@ Important `.env` values:
 - `SOURCE_POSITION_POLICY`: defaults to `skip_preexisting`; do not copy tokens the source already held before bot startup.
 - `SELL_SIZING_MODE`: defaults to `source_position_ratio`; copied sells reduce local exposure proportionally to the source's observed position reduction.
 - `ON_RISK_MISMATCH`: defaults to `freeze_token`; stop copying a token if a tracked source buy/sell cannot be copied.
+- `RISK_MISMATCH_SCOPE`: `token` preserves the original per-outcome behavior. `wallet_market` blocks subsequent BUYs for both outcomes when any token for that source wallet and market freezes; risk-reducing SELLs remain available.
 - `SOURCE_POSITION_SIZE_THRESHOLD`: minimum source position size to treat as pre-existing at startup.
 - `OUTCOME_SELECTION_MODE`: `source` copies the traded outcome; `inverse_up_down` copies the authoritative opposite token only for strict two-outcome `Up`/`Down` markets.
 - `MAX_TRADE_USD`: max copied notional per trade.

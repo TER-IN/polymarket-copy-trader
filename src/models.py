@@ -41,6 +41,11 @@ class RiskMismatchPolicy(StrEnum):
     FREEZE_TOKEN = "freeze_token"
 
 
+class RiskMismatchScope(StrEnum):
+    TOKEN = "token"
+    WALLET_MARKET = "wallet_market"
+
+
 class OutcomeSelectionMode(StrEnum):
     SOURCE = "source"
     INVERSE_UP_DOWN = "inverse_up_down"

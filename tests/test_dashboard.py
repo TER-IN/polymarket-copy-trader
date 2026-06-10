@@ -16,6 +16,16 @@ class NoQuoteClient:
         raise RuntimeError(f"no order book for {token_id}")
 
 
+class FakeRedemptionDb:
+    def __init__(self, rows):
+        self.rows = rows
+        self.requested_limit = object()
+
+    def copied_redemption_rows(self, limit=None):
+        self.requested_limit = limit
+        return self.rows
+
+
 def position_row(**overrides):
     row = {
         "market_id": "m1",
@@ -26,6 +36,7 @@ def position_row(**overrides):
         "total_cost": 5.0,
         "realized_pnl": 0.0,
         "status": "open",
+        "position_created_at": "2026-06-08 14:55:00",
         "market_title": "Short Market",
         "event_slug": "short-market",
         "market_end_time": "2026-06-08T15:00:00+00:00",
@@ -46,6 +57,31 @@ def test_polymarket_market_url_accepts_event_slug() -> None:
 def test_polymarket_market_url_rejects_untrusted_value() -> None:
     assert dashboard._polymarket_market_url("market/../../other") is None
     assert dashboard._polymarket_market_url(None) is None
+
+
+def test_copied_redemptions_are_unlimited_and_use_position_style_market_labels() -> None:
+    db = FakeRedemptionDb(
+        [
+            {
+                "market_id": "condition-id",
+                "market_title": "Ethereum Up or Down",
+                "event_slug": "eth-updown-5m-1780776900",
+            },
+            {
+                "market_id": "another-condition-id",
+                "market_title": None,
+                "event_slug": None,
+            },
+        ]
+    )
+
+    rows = dashboard._copied_redemption_rows(db)
+
+    assert db.requested_limit is None
+    assert rows[0]["market_title"] == "Ethereum Up or Down"
+    assert rows[0]["market_url"] == "https://polymarket.com/event/eth-updown-5m-1780776900"
+    assert rows[1]["market_title"] == "Unknown market"
+    assert rows[1]["market_url"] is None
 
 
 def test_ended_position_without_quote_awaits_resolution_instead_of_showing_full_loss(
@@ -87,3 +123,4 @@ def test_position_without_quote_before_end_remains_open_with_unknown_value(
 
     assert rows[0]["status"] == "open"
     assert rows[0]["unrealized"] is None
+    assert rows[0]["position_created_at"] == "2026-06-08 14:55:00"
