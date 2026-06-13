@@ -61,7 +61,8 @@ Important `.env` values:
 - `SOURCE_POSITION_SIZE_THRESHOLD`: minimum source position size to treat as pre-existing at startup.
 - `OUTCOME_SELECTION_MODE`: `source` copies the traded outcome; `inverse_up_down` copies the authoritative opposite token only for strict two-outcome `Up`/`Down` markets.
 - `MAX_TRADE_USD`: max copied notional per trade.
-- `COPY_RATIO`: copied fraction of source notional.
+- `COPY_RATIO`: copied fraction of source notional in `source` mode.
+- `INVERSE_SHARE_COPY_RATIO`: copied fraction of source shares in `inverse_up_down` mode.
 - `MAX_SLIPPAGE_CENTS`: max worse price versus the selected outcome's reference price.
 - `MAX_BUY_PRICE`: optional maximum executable price for copied buys.
 - `MAX_SECONDS_UNTIL_MARKET_END`: optional maximum time until the advertised market end; buys with missing end metadata are skipped.

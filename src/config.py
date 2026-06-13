@@ -56,6 +56,7 @@ class Settings(BaseSettings):
 
     max_trade_usd: float | None = Field(default=None, alias="MAX_TRADE_USD")
     copy_ratio: float = Field(default=0.25, alias="COPY_RATIO")
+    inverse_share_copy_ratio: float = Field(default=0.1, alias="INVERSE_SHARE_COPY_RATIO")
     max_slippage_cents: float = Field(default=2.0, alias="MAX_SLIPPAGE_CENTS")
     max_buy_price: float | None = Field(default=None, alias="MAX_BUY_PRICE")
     max_seconds_until_market_end: int | None = Field(default=None, alias="MAX_SECONDS_UNTIL_MARKET_END")
@@ -144,6 +145,12 @@ class Settings(BaseSettings):
             raise ValueError("COPY_RATIO must be positive")
         if self.copy_ratio > 1 and not self.allow_copy_ratio_gt_one:
             raise ValueError("COPY_RATIO > 1 requires ALLOW_COPY_RATIO_GT_ONE=true")
+        if self.inverse_share_copy_ratio <= 0:
+            raise ValueError("INVERSE_SHARE_COPY_RATIO must be positive")
+        if self.inverse_share_copy_ratio > 1 and not self.allow_copy_ratio_gt_one:
+            raise ValueError(
+                "INVERSE_SHARE_COPY_RATIO > 1 requires ALLOW_COPY_RATIO_GT_ONE=true"
+            )
         if self.max_slippage_cents < 0:
             raise ValueError("MAX_SLIPPAGE_CENTS cannot be negative")
         if self.max_buy_price is not None and not 0 < self.max_buy_price <= 1:
@@ -183,3 +190,5 @@ class Settings(BaseSettings):
             raise ValueError("live mode requires MAX_TRADE_USD")
         if self.copy_ratio > 1 and not self.allow_copy_ratio_gt_one:
             raise ValueError("COPY_RATIO > 1 is refused in live mode")
+        if self.inverse_share_copy_ratio > 1 and not self.allow_copy_ratio_gt_one:
+            raise ValueError("INVERSE_SHARE_COPY_RATIO > 1 is refused in live mode")

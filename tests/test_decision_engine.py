@@ -86,6 +86,7 @@ def test_slippage_checks() -> None:
 def test_decision_allows_buy(tmp_path) -> None:
     settings = Settings(
         target_wallets=["0xabc"],
+        copy_ratio=0.25,
         max_trade_usd=10,
         min_trade_usd=1,
         max_trade_age_seconds=60,
@@ -102,6 +103,88 @@ def test_decision_allows_buy(tmp_path) -> None:
     assert decision.should_copy
     assert decision.copy_notional_usd == 10
     assert decision.copy_shares == 10 / 0.51
+
+
+def test_inverse_buy_copies_source_shares_with_independent_ratio(tmp_path) -> None:
+    settings = Settings(
+        copy_ratio=0.9,
+        inverse_share_copy_ratio=0.1,
+        max_trade_usd=100,
+        min_trade_usd=1,
+        max_trade_age_seconds=60,
+        daily_spend_cap_usd=100,
+        per_market_exposure_cap_usd=100,
+        max_buy_price=None,
+        max_seconds_until_market_end=None,
+    )
+    db = Database(tmp_path / "db.sqlite3")
+    engine = DecisionEngine(settings, db, FakeClob(ask=0.4))
+    source = replace(
+        make_trade(),
+        asset_id="down",
+        token_id="down",
+        outcome="Down",
+        price=0.6,
+        size=100,
+        notional_usd=60,
+    )
+    inverse = replace(
+        source,
+        asset_id="up",
+        token_id="up",
+        outcome="Up",
+        price=0.4,
+        raw_payload={
+            "_outcome_selection": {
+                "mode": "inverse_up_down",
+                "source_outcome": "Down",
+                "copied_outcome": "Up",
+            }
+        },
+    )
+
+    decision = engine.decide(inverse, source_trade=source)
+
+    assert decision.should_copy
+    assert decision.copy_shares == 10
+    assert decision.copy_notional_usd == 4
+    assert decision.details["buy_sizing_mode"] == "source_shares_ratio"
+    assert decision.details["base_copy_shares"] == 10
+    assert decision.details["base_copy_notional_usd"] is None
+
+
+def test_inverse_share_buy_remains_capped_by_dollar_risk_limits(tmp_path) -> None:
+    settings = Settings(
+        inverse_share_copy_ratio=0.1,
+        max_trade_usd=3,
+        min_trade_usd=1,
+        max_trade_age_seconds=60,
+        daily_spend_cap_usd=100,
+        per_market_exposure_cap_usd=100,
+        max_buy_price=None,
+        max_seconds_until_market_end=None,
+    )
+    db = Database(tmp_path / "db.sqlite3")
+    source = replace(make_trade(), price=0.6, size=100, notional_usd=60)
+    inverse = replace(
+        source,
+        asset_id="up",
+        token_id="up",
+        outcome="Up",
+        price=0.4,
+        raw_payload={"_outcome_selection": {"mode": "inverse_up_down"}},
+    )
+
+    decision = DecisionEngine(settings, db, FakeClob(ask=0.4)).decide(
+        inverse,
+        source_trade=source,
+    )
+
+    assert decision.should_copy
+    assert decision.copy_notional_usd == 3
+    assert decision.copy_shares == 7.5
+    assert decision.fill_ratio == 0.75
+    assert "inverse share target filled 75.0%" in decision.reason
 
 
 def test_market_title_allowlist_matches_buy_case_insensitively(tmp_path) -> None:

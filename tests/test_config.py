@@ -1,3 +1,5 @@
+import pytest
+
 from config import Settings
 from models import RiskMismatchScope
 
@@ -24,3 +26,11 @@ def test_wallet_market_risk_mismatch_scope_parses(monkeypatch) -> None:
     monkeypatch.setenv("RISK_MISMATCH_SCOPE", "wallet_market")
 
     assert Settings().risk_mismatch_scope == RiskMismatchScope.WALLET_MARKET
+
+
+def test_inverse_share_copy_ratio_parses_and_validates(monkeypatch) -> None:
+    monkeypatch.setenv("INVERSE_SHARE_COPY_RATIO", "0.05")
+    assert Settings().inverse_share_copy_ratio == 0.05
+
+    with pytest.raises(ValueError, match="INVERSE_SHARE_COPY_RATIO must be positive"):
+        Settings(inverse_share_copy_ratio=0)

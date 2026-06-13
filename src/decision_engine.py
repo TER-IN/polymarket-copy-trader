@@ -101,6 +101,7 @@ class DecisionEngine:
             "side": trade.side.value,
             "strategy_config": {
                 "copy_ratio": self.settings.copy_ratio,
+                "inverse_share_copy_ratio": self.settings.inverse_share_copy_ratio,
                 "max_trade_usd": self.settings.max_trade_usd,
                 "max_slippage_cents": self.settings.max_slippage_cents,
                 "max_buy_price": self.settings.max_buy_price,
@@ -226,8 +227,16 @@ class DecisionEngine:
         if trade.side == TradeSide.BUY:
             position = self.db.get_position(trade_market_key(trade), token_id, trade.outcome or "")
             current_exposure = position.total_cost if position else 0.0
-            base_copy_notional = source_trade.notional_usd * self.settings.copy_ratio
-            caps = [base_copy_notional]
+            inverse_share_sizing = (
+                details["outcome_selection_mode"] == "inverse_up_down"
+            )
+            base_copy_notional = None
+            if inverse_share_sizing:
+                requested_shares = source_trade.size * self.settings.inverse_share_copy_ratio
+                caps = []
+            else:
+                base_copy_notional = source_trade.notional_usd * self.settings.copy_ratio
+                caps = [base_copy_notional]
             if self.settings.max_trade_usd is not None:
                 caps.append(self.settings.max_trade_usd)
             remaining_daily = None
@@ -256,6 +265,10 @@ class DecisionEngine:
             details.update(
                 {
                     "base_copy_notional_usd": base_copy_notional,
+                    "base_copy_shares": requested_shares if inverse_share_sizing else None,
+                    "buy_sizing_mode": (
+                        "source_shares_ratio" if inverse_share_sizing else "source_notional_ratio"
+                    ),
                     "remaining_daily_cap_usd": remaining_daily,
                     "remaining_market_exposure_usd": remaining_exposure,
                     "requested_copy_notional_usd": requested_notional,
@@ -269,7 +282,7 @@ class DecisionEngine:
                 return _reject("available balance exhausted", details)
             if requested_notional <= 0:
                 return _reject("copy size capped to zero", details)
-            if requested_notional < base_copy_notional:
+            if base_copy_notional is not None and requested_notional < base_copy_notional:
                 reason = "copy allowed; buy capped by risk limits"
 
         execution_limit = allowed
@@ -304,7 +317,7 @@ class DecisionEngine:
                 token_id,
                 trade.side,
                 affordable_notional,
-                0.0,
+                requested_shares,
                 execution_limit,
                 fee_rate,
                 fee_exponent,
@@ -378,7 +391,13 @@ class DecisionEngine:
             }
         )
         if estimate.fill_ratio < 1:
-            reason += f"; partial book fill {estimate.fill_ratio:.1%}"
+            if (
+                trade.side == TradeSide.BUY
+                and details.get("buy_sizing_mode") == "source_shares_ratio"
+            ):
+                reason += f"; inverse share target filled {estimate.fill_ratio:.1%}"
+            else:
+                reason += f"; partial book fill {estimate.fill_ratio:.1%}"
 
         copy_notional = estimate.filled_notional_usd
         copy_shares = estimate.filled_shares
@@ -557,8 +576,13 @@ class DecisionEngine:
         if price is None or not passes_slippage(side, limit_price, price, 0):
             fills: tuple[BookFill, ...] = ()
         elif side == TradeSide.BUY:
-            shares = requested_notional / price if price > 0 else 0.0
-            fills = (BookFill(price, shares, requested_notional),)
+            affordable_shares = requested_notional / price if price > 0 else 0.0
+            shares = (
+                min(requested_shares, affordable_shares)
+                if requested_shares > 0
+                else affordable_shares
+            )
+            fills = (BookFill(price, shares, shares * price),) if shares > 0 else ()
         else:
             fills = (BookFill(price, requested_shares, requested_shares * price),)
         filled_shares = sum(fill.shares for fill in fills)
@@ -566,6 +590,12 @@ class DecisionEngine:
         fee = sum(
             fill.shares * fee_rate * (fill.price * (1.0 - fill.price)) ** fee_exponent
             for fill in fills
+        )
+        requested = requested_shares if side == TradeSide.BUY and requested_shares > 0 else (
+            requested_notional if side == TradeSide.BUY else requested_shares
+        )
+        filled = filled_shares if side == TradeSide.BUY and requested_shares > 0 else (
+            filled_notional if side == TradeSide.BUY else filled_shares
         )
         return ExecutionEstimate(
             token_id,
@@ -576,7 +606,7 @@ class DecisionEngine:
             filled_shares,
             filled_notional / filled_shares if filled_shares else None,
             fills[-1].price if fills else None,
-            1.0 if fills else 0.0,
+            min(1.0, filled / requested) if requested > 0 else 0.0,
             fee,
             fee_rate,
             fee_exponent,

@@ -57,6 +57,7 @@ def summary() -> dict[str, Any]:
         "stop_trading": Path(settings.stop_trading_file).exists(),
         "settings": {
             "copy_ratio": settings.copy_ratio,
+            "inverse_share_copy_ratio": settings.inverse_share_copy_ratio,
             "max_trade_usd": settings.max_trade_usd,
             "min_trade_usd": settings.min_trade_usd,
             "max_trade_age_seconds": settings.max_trade_age_seconds,

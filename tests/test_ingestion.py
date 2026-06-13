@@ -95,6 +95,7 @@ def test_inverse_mode_opens_and_closes_opposite_position(tmp_path) -> None:
     settings = Settings(
         outcome_selection_mode=OutcomeSelectionMode.INVERSE_UP_DOWN,
         copy_ratio=1,
+        inverse_share_copy_ratio=0.1,
         max_trade_usd=100,
         max_trade_age_seconds=60,
         daily_spend_cap_usd=1000,
@@ -133,7 +134,7 @@ def test_inverse_mode_opens_and_closes_opposite_position(tmp_path) -> None:
     assert ingestor.process_trade(buy)
     position = db.get_position("condition", "up", "Up")
     assert position is not None
-    assert position.total_shares == 150
+    assert position.total_shares == 10
     source_state = db.get_source_token_state_for_trade(buy)
     assert source_state is not None
     assert source_state["observed_source_shares"] == 100

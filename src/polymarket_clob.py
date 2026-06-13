@@ -104,11 +104,17 @@ class PublicClobClient:
             if available_shares <= 0 or not _within_limit(side, price, limit_price):
                 continue
             if side == TradeSide.BUY:
-                if remaining_notional <= 1e-12:
+                if remaining_notional <= 1e-12 or (
+                    requested_shares > 0 and remaining_shares <= 1e-12
+                ):
                     break
                 shares = min(available_shares, remaining_notional / price)
+                if requested_shares > 0:
+                    shares = min(shares, remaining_shares)
                 notional = shares * price
                 remaining_notional -= notional
+                if requested_shares > 0:
+                    remaining_shares -= shares
             else:
                 if remaining_shares <= 1e-12:
                     break
@@ -119,8 +125,13 @@ class PublicClobClient:
 
         filled_shares = sum(fill.shares for fill in fills)
         filled_notional = sum(fill.notional_usd for fill in fills)
-        requested = requested_notional_usd if side == TradeSide.BUY else requested_shares
-        filled = filled_notional if side == TradeSide.BUY else filled_shares
+        share_sized_buy = side == TradeSide.BUY and requested_shares > 0
+        requested = (
+            requested_shares
+            if share_sized_buy
+            else requested_notional_usd if side == TradeSide.BUY else requested_shares
+        )
+        filled = filled_shares if share_sized_buy or side == TradeSide.SELL else filled_notional
         average = filled_notional / filled_shares if filled_shares > 0 else None
         fee = sum(
             fill.shares * fee_rate * (fill.price * (1.0 - fill.price)) ** fee_exponent

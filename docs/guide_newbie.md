@@ -213,6 +213,7 @@ Main settings:
 
 ```env
 COPY_RATIO=0.25
+INVERSE_SHARE_COPY_RATIO=0.10
 MAX_TRADE_USD=25
 MIN_TRADE_USD=1
 ```
@@ -231,6 +232,16 @@ copy size = min(target notional * COPY_RATIO, MAX_TRADE_USD)
 ```
 
 This copies dollar notional, not share count.
+
+That formula applies to `OUTCOME_SELECTION_MODE=source`. The inverse mode uses
+an independent share ratio instead:
+
+```text
+target opposite shares = source shares * INVERSE_SHARE_COPY_RATIO
+```
+
+The resulting dollar cost is still limited by `MAX_TRADE_USD`, the daily spend
+cap, per-market exposure, available balance, visible liquidity, and fees.
 
 Example:
 
@@ -290,9 +301,15 @@ For an experimental contrarian dry-run, you can select the opposite outcome on s
 
 ```env
 OUTCOME_SELECTION_MODE=inverse_up_down
+INVERSE_SHARE_COPY_RATIO=0.10
 ```
 
 In this mode, a source `BUY Down` becomes a copied `BUY Up`, and a later source `SELL Down` reduces the copied `Up` position. The reverse applies to source `Up` trades.
+
+Inverse buys target the configured fraction of the source trade's share count,
+not its dollar notional. For example, a source purchase of `100 Down` shares
+with `INVERSE_SHARE_COPY_RATIO=0.10` targets `10 Up` shares at the currently
+executable Up price. `COPY_RATIO` does not size inverse buys.
 
 The bot does not infer the opposite token from the market title. It queries authoritative market metadata and proceeds only when there are exactly two labeled outcomes, `Up` and `Down`, with distinct token IDs. Other binary markets, multi-outcome markets, missing metadata, and source tokens outside the returned pair are rejected.
 
