@@ -432,6 +432,54 @@ def test_buy_is_capped_by_remaining_risk_limits(tmp_path) -> None:
     assert "capped" in decision.reason
 
 
+def test_buy_count_limit_rejects_next_wallet_market_entry(tmp_path) -> None:
+    settings = Settings(
+        max_copied_buys_per_wallet_market=1,
+        max_trade_age_seconds=60,
+        max_seconds_until_market_end=None,
+    )
+    db = Database(tmp_path / "db.sqlite3")
+    first = make_trade()
+    db.insert_trade(first)
+    db.record_order(first.dedupe_key, first, 5, 10, 0.5, "dry_run")
+    second = replace(first, transaction_hash="0xsecond")
+
+    decision = DecisionEngine(settings, db, FakeClob()).decide(second)
+
+    assert not decision.should_copy
+    assert decision.reason == "maximum copied buys per wallet/market reached: 1/1"
+    assert decision.details["copied_buy_count_for_wallet_market"] == 1
+
+
+def test_condition_exposure_cap_includes_both_outcomes(tmp_path) -> None:
+    settings = Settings(
+        copy_ratio=1,
+        max_trade_usd=25,
+        condition_exposure_cap_usd=10,
+        per_market_exposure_cap_usd=100,
+        max_trade_age_seconds=60,
+        daily_spend_cap_usd=100,
+        max_buy_price=None,
+        max_seconds_until_market_end=None,
+    )
+    db = Database(tmp_path / "db.sqlite3")
+    db.upsert_position(apply_buy(None, "m1", "up", "Up", 10, 0.4, "0xabc"))
+    db.upsert_position(apply_buy(None, "m1", "down", "Down", 10, 0.4, "0xabc"))
+    trade = replace(
+        make_trade(),
+        asset_id="other",
+        token_id="other",
+        outcome="Other",
+    )
+
+    decision = DecisionEngine(settings, db, FakeClob(ask=0.5)).decide(trade)
+
+    assert decision.should_copy
+    assert decision.copy_notional_usd == 2
+    assert decision.details["current_condition_exposure_usd"] == 8
+    assert decision.details["remaining_condition_exposure_usd"] == 2
+
+
 def test_buy_is_capped_by_available_balance(tmp_path) -> None:
     settings = Settings(
         copy_ratio=1,

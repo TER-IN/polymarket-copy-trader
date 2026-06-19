@@ -59,10 +59,12 @@ Important `.env` values:
 - `ON_RISK_MISMATCH`: defaults to `freeze_token`; stop copying a token if a tracked source buy/sell cannot be copied.
 - `RISK_MISMATCH_SCOPE`: `token` preserves the original per-outcome behavior. `wallet_market` blocks subsequent BUYs for both outcomes when any token for that source wallet and market freezes; risk-reducing SELLs remain available.
 - `SOURCE_POSITION_SIZE_THRESHOLD`: minimum source position size to treat as pre-existing at startup.
-- `OUTCOME_SELECTION_MODE`: `source` copies the traded outcome; `inverse_up_down` copies the authoritative opposite token only for strict two-outcome `Up`/`Down` markets.
+- `OUTCOME_SELECTION_MODE`: `source` copies the traded outcome; `inverse_up_down` copies either authoritative opposite token; `inverse_down_underdog` copies `Up` only when the source buys `Down` below the configured threshold.
 - `MAX_TRADE_USD`: max copied notional per trade.
 - `COPY_RATIO`: copied fraction of source notional in `source` mode.
-- `INVERSE_SHARE_COPY_RATIO`: copied fraction of source shares in `inverse_up_down` mode.
+- `INVERSE_SHARE_COPY_RATIO`: copied fraction of source shares in either inverse outcome mode.
+- `INVERSE_DOWN_MAX_SOURCE_PRICE`: strict source-`Down` BUY price ceiling for `inverse_down_underdog`; the default `0.50` requires a price below `0.50`.
+- `MAX_COPIED_BUYS_PER_WALLET_MARKET`: optional accepted BUY limit for each source wallet and condition.
 - `MAX_SLIPPAGE_CENTS`: max worse price versus the selected outcome's reference price.
 - `MAX_BUY_PRICE`: optional maximum executable price for copied buys.
 - `MAX_SECONDS_UNTIL_MARKET_END`: optional maximum time until the advertised market end; buys with missing end metadata are skipped.
@@ -83,6 +85,7 @@ Important `.env` values:
 - `RESOLUTION_SCAN_INTERVAL_SECONDS`: interval for resolution scans during `run-dry`/`run-live`; 60 seconds is the default for timely short-market settlement.
 - `DAILY_SPEND_CAP_USD`: local daily copy cap including estimated fees. Empty, `none`, or `unlimited` disables only this cap.
 - `PER_MARKET_EXPOSURE_CAP_USD`: local per-market cap.
+- `CONDITION_EXPOSURE_CAP_USD`: optional aggregate open cost cap across all outcome tokens in one condition.
 - `DRY_RUN_STARTING_BALANCE_USD`: optional simulated cash balance. Dry-run buys reduce it; sells and settlements replenish it.
 - `POLYMARKET_PRIVATE_KEY`: only required for live mode.
 - `CHAIN_ID`: defaults to Polygon `137`.

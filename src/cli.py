@@ -66,7 +66,11 @@ def run(settings: Settings, risk_flag: bool = False) -> None:
         Executor(settings, db),
         resolution_scanner=ResolutionScanner(settings, db, gamma_client),
         crowding_analyzer=crowding,
-        outcome_selector=OutcomeSelector(settings.outcome_selection_mode, gamma_client),
+        outcome_selector=OutcomeSelector(
+            settings.outcome_selection_mode,
+            gamma_client,
+            settings.inverse_down_max_source_price,
+        ),
     )
     ingestor.run_forever()
 

@@ -1,9 +1,10 @@
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
 
 from models import OutcomeSelectionMode, TradeEvent, TradeSide
-from outcome_selection import OutcomeSelectionError, OutcomeSelector
+from outcome_selection import OutcomeSelectionError, OutcomeSelectionSkip, OutcomeSelector
 from polymarket_gamma import OutcomeToken
 
 
@@ -79,3 +80,40 @@ def test_source_mode_returns_original_trade_without_metadata_lookup() -> None:
 
     assert selected is source
     assert provider.calls == 0
+
+
+def test_inverse_down_underdog_selects_only_cheap_source_down_buys() -> None:
+    pair = (OutcomeToken("up", "Up"), OutcomeToken("down", "Down"))
+    selector = OutcomeSelector(
+        OutcomeSelectionMode.INVERSE_DOWN_UNDERDOG,
+        FakeTokenProvider(pair),
+        inverse_down_max_source_price=0.5,
+    )
+
+    selected = selector.select(make_trade(price=0.49))
+
+    assert selected.asset_id == "up"
+    assert selected.outcome == "Up"
+    assert selected.price == pytest.approx(0.51)
+    assert selected.raw_payload["_outcome_selection"]["mode"] == "inverse_down_underdog"
+
+    with pytest.raises(OutcomeSelectionSkip, match="not below"):
+        selector.select(make_trade(price=0.5))
+    with pytest.raises(OutcomeSelectionSkip, match="not Down"):
+        selector.select(make_trade(asset_id="up", outcome="Up", price=0.4))
+
+
+def test_inverse_down_underdog_allows_matching_source_sell_above_threshold() -> None:
+    pair = (OutcomeToken("up", "Up"), OutcomeToken("down", "Down"))
+    selector = OutcomeSelector(
+        OutcomeSelectionMode.INVERSE_DOWN_UNDERDOG,
+        FakeTokenProvider(pair),
+        inverse_down_max_source_price=0.5,
+    )
+
+    selected = selector.select(
+        replace(make_trade(price=0.7), side=TradeSide.SELL)
+    )
+
+    assert selected.asset_id == "up"
+    assert selected.outcome == "Up"

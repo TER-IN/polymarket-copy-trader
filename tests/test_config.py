@@ -1,7 +1,7 @@
 import pytest
 
 from config import Settings
-from models import RiskMismatchScope
+from models import OutcomeSelectionMode, RiskMismatchScope
 
 
 def test_env_csv_wallets_parse(monkeypatch) -> None:
@@ -34,3 +34,24 @@ def test_inverse_share_copy_ratio_parses_and_validates(monkeypatch) -> None:
 
     with pytest.raises(ValueError, match="INVERSE_SHARE_COPY_RATIO must be positive"):
         Settings(inverse_share_copy_ratio=0)
+
+
+def test_inverse_down_underdog_settings_parse_and_validate(monkeypatch) -> None:
+    monkeypatch.setenv("OUTCOME_SELECTION_MODE", "inverse_down_underdog")
+    monkeypatch.setenv("INVERSE_DOWN_MAX_SOURCE_PRICE", "0.48")
+    monkeypatch.setenv("MAX_COPIED_BUYS_PER_WALLET_MARKET", "5")
+    monkeypatch.setenv("CONDITION_EXPOSURE_CAP_USD", "25")
+
+    settings = Settings()
+
+    assert settings.outcome_selection_mode == OutcomeSelectionMode.INVERSE_DOWN_UNDERDOG
+    assert settings.inverse_down_max_source_price == 0.48
+    assert settings.max_copied_buys_per_wallet_market == 5
+    assert settings.condition_exposure_cap_usd == 25
+
+    with pytest.raises(ValueError, match="INVERSE_DOWN_MAX_SOURCE_PRICE"):
+        Settings(inverse_down_max_source_price=1)
+    with pytest.raises(ValueError, match="MAX_COPIED_BUYS_PER_WALLET_MARKET"):
+        Settings(max_copied_buys_per_wallet_market=0)
+    with pytest.raises(ValueError, match="CONDITION_EXPOSURE_CAP_USD"):
+        Settings(condition_exposure_cap_usd=0)

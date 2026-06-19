@@ -1301,6 +1301,41 @@ class Database:
             ).fetchone()
         return float(row["spend"])
 
+    def copied_buy_count_for_wallet_market(self, trade: TradeEvent) -> int:
+        market_id = trade.market_id or trade.condition_id or ""
+        if not market_id:
+            return 0
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS buy_count
+                FROM copied_orders co
+                JOIN target_trades tt ON tt.dedupe_key = co.source_trade_key
+                WHERE lower(tt.source_wallet) = lower(?)
+                  AND co.market_id = ?
+                  AND co.side = 'BUY'
+                  AND co.status IN ('dry_run', 'submitted', 'filled', 'partial')
+                """,
+                (trade.source_wallet, market_id),
+            ).fetchone()
+        return int(row["buy_count"])
+
+    def open_condition_exposure_usd(self, market_id: str) -> float:
+        if not market_id:
+            return 0.0
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COALESCE(SUM(total_cost), 0) AS exposure
+                FROM copied_positions
+                WHERE market_id = ?
+                  AND status IN ('open', 'redeem_required')
+                  AND total_shares > 0
+                """,
+                (market_id,),
+            ).fetchone()
+        return float(row["exposure"])
+
     def simulated_cash_balance(self, starting_balance_usd: float) -> float:
         with self.connect() as conn:
             order_rows = conn.execute(

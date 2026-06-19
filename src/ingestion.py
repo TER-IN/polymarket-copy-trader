@@ -12,7 +12,7 @@ from db import Database
 from decision_engine import DecisionEngine
 from execution import Executor
 from models import OutcomeSelectionMode, RedemptionEvent, TradeEvent, utc_now
-from outcome_selection import OutcomeSelectionError, OutcomeSelector
+from outcome_selection import OutcomeSelectionError, OutcomeSelectionSkip, OutcomeSelector
 from polymarket_data import PolymarketDataClient
 from redemption import RedemptionExecutor
 from resolution import ResolutionScanner
@@ -154,6 +154,19 @@ class PollingIngestor:
 
         try:
             selected_trade = self._select_outcome(trade)
+        except OutcomeSelectionSkip as exc:
+            reason = str(exc)
+            details = {
+                "outcome_selection_mode": self.settings.outcome_selection_mode.value,
+                "source_asset_id": trade.asset_id or trade.token_id,
+                "source_outcome": trade.outcome,
+                "source_price": trade.price,
+                "inverse_down_max_source_price": self.settings.inverse_down_max_source_price,
+            }
+            _add_timing_details(details, trade, observed_at, processing_started)
+            logger.info("copy decision=False reason=%s", reason)
+            self.db.record_copy_decision(trade, False, reason, details)
+            return True
         except OutcomeSelectionError as exc:
             reason = str(exc)
             details = {
@@ -240,7 +253,9 @@ def _should_freeze_rejection(reason: str) -> bool:
         "market ends too late",
         "market end time",
         "market is not an authoritative",
+        "maximum copied buys per wallet/market reached",
         "per-market exposure cap exhausted",
+        "condition exposure cap exhausted",
         "source wallet market frozen",
         "trade too old",
         "Up/Down market duration",

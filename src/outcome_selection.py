@@ -3,11 +3,15 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Protocol
 
-from models import OutcomeSelectionMode, TradeEvent
+from models import OutcomeSelectionMode, TradeEvent, TradeSide
 from polymarket_gamma import OutcomeToken
 
 
 class OutcomeSelectionError(RuntimeError):
+    pass
+
+
+class OutcomeSelectionSkip(RuntimeError):
     pass
 
 
@@ -22,14 +26,34 @@ class UpDownTokenProvider(Protocol):
 
 
 class OutcomeSelector:
-    def __init__(self, mode: OutcomeSelectionMode, token_provider: UpDownTokenProvider):
+    def __init__(
+        self,
+        mode: OutcomeSelectionMode,
+        token_provider: UpDownTokenProvider,
+        inverse_down_max_source_price: float = 0.5,
+    ):
         self.mode = mode
         self.token_provider = token_provider
+        self.inverse_down_max_source_price = inverse_down_max_source_price
         self._cache: dict[str, tuple[OutcomeToken, OutcomeToken]] = {}
 
     def select(self, source_trade: TradeEvent) -> TradeEvent:
         if self.mode == OutcomeSelectionMode.SOURCE:
             return source_trade
+        if self.mode == OutcomeSelectionMode.INVERSE_DOWN_UNDERDOG:
+            if (source_trade.outcome or "").casefold() != "down":
+                raise OutcomeSelectionSkip(
+                    "inverse Down-underdog signal skipped: source outcome is not Down"
+                )
+            if (
+                source_trade.side == TradeSide.BUY
+                and source_trade.price >= self.inverse_down_max_source_price
+            ):
+                raise OutcomeSelectionSkip(
+                    "inverse Down-underdog signal skipped: "
+                    f"source price {source_trade.price:.4f} is not below "
+                    f"{self.inverse_down_max_source_price:.4f}"
+                )
 
         market_id = source_trade.market_id or source_trade.condition_id
         source_token_id = source_trade.asset_id or source_trade.token_id

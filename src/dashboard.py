@@ -58,6 +58,10 @@ def summary() -> dict[str, Any]:
         "settings": {
             "copy_ratio": settings.copy_ratio,
             "inverse_share_copy_ratio": settings.inverse_share_copy_ratio,
+            "inverse_down_max_source_price": settings.inverse_down_max_source_price,
+            "max_copied_buys_per_wallet_market": (
+                settings.max_copied_buys_per_wallet_market
+            ),
             "max_trade_usd": settings.max_trade_usd,
             "min_trade_usd": settings.min_trade_usd,
             "max_trade_age_seconds": settings.max_trade_age_seconds,
@@ -75,6 +79,7 @@ def summary() -> dict[str, Any]:
             "daily_spend_cap_usd": settings.daily_spend_cap_usd,
             "trading_day_timezone": settings.trading_day_timezone,
             "per_market_exposure_cap_usd": settings.per_market_exposure_cap_usd,
+            "condition_exposure_cap_usd": settings.condition_exposure_cap_usd,
             "enable_resolution_scanner": settings.enable_resolution_scanner,
             "resolution_scan_interval_seconds": settings.resolution_scan_interval_seconds,
             "source_position_policy": settings.source_position_policy.value,

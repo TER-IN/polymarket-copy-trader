@@ -13,9 +13,9 @@ This project is dry-run first. Public Polymarket data is used for monitoring, CL
 6. Binary and multi-outcome trades are both represented by the specific traded `asset_id` / `token_id` plus `outcome`.
 7. `Database.insert_trade` deduplicates by transaction, wallet, market/outcome, side, size, and price.
 8. `source_token_states` tracks whether each source token lifecycle is clean, pre-existing, or frozen.
-9. `OutcomeSelector` optionally maps a source `Up`/`Down` token to the authoritative opposite token while preserving the original source event for lifecycle tracking.
+9. `OutcomeSelector` optionally maps a source `Up`/`Down` token to the authoritative opposite token while preserving the original source event for lifecycle tracking. The selective `inverse_down_underdog` mode ignores nonqualifying signals without freezing lifecycle state.
 10. `CrowdingAnalyzer` optionally checks nearby same-market/outcome trades and stores "suspected copy pressure".
-11. `DecisionEngine` sizes source-mode buys by copied notional and inverse Up/Down buys by a configured fraction of source shares, then applies age, slippage, maximum buy price, market-end window, available balance, liquidity, crowding, daily spend, exposure, source-position lifecycle, and sell-position checks.
+11. `DecisionEngine` sizes source-mode buys by copied notional and inverse Up/Down buys by a configured fraction of source shares, then applies age, slippage, maximum buy price, market-end window, available balance, liquidity, crowding, daily spend, per-token and condition-wide exposure, accepted-entry count, source-position lifecycle, and sell-position checks.
 12. `Executor` records dry-run orders or submits guarded live FAK orders through `py-clob-client`.
 13. `ResolutionScanner` checks local copied positions against public Gamma market resolution data. Dry-run wins/losses are settled locally; live winners are marked `redeem_required`; live losses are realized as losses.
 14. `RedemptionExecutor` handles source `REDEEM` activity by triggering `ResolutionScanner` for that condition. Only authoritative token-level winner data determines payout.

@@ -188,6 +188,47 @@ def test_inverse_mode_records_strict_pair_rejection(tmp_path) -> None:
     assert '"outcome_selection_mode": "inverse_up_down"' in decision["decision_details"]
 
 
+def test_inverse_down_underdog_skip_does_not_freeze_source_state(tmp_path) -> None:
+    settings = Settings(
+        outcome_selection_mode=OutcomeSelectionMode.INVERSE_DOWN_UNDERDOG,
+        inverse_down_max_source_price=0.5,
+        enable_crowding_check=False,
+    )
+    db = Database(tmp_path / "db.sqlite3")
+    ingestor = PollingIngestor(
+        settings,
+        db,
+        FakeDataClient([]),
+        DecisionEngine(settings, db, FakeClob()),
+        Executor(settings, db),
+        outcome_selector=OutcomeSelector(
+            settings.outcome_selection_mode,
+            FakeUpDownProvider(),
+            settings.inverse_down_max_source_price,
+        ),
+    )
+    trade = TradeEvent(
+        **{
+            **make_trade().__dict__,
+            "asset_id": "up",
+            "token_id": "up",
+            "outcome": "Up",
+            "price": 0.4,
+            "notional_usd": 40,
+        }
+    )
+
+    assert ingestor.process_trade(trade)
+    assert db.get_source_token_state_for_trade(trade) is None
+    with db.connect() as conn:
+        decision = conn.execute(
+            "SELECT should_copy, reason FROM copy_decisions WHERE source_trade_key = ?",
+            (trade.dedupe_key,),
+        ).fetchone()
+    assert decision["should_copy"] == 0
+    assert "source outcome is not Down" in decision["reason"]
+
+
 def test_stop_block_does_not_advance_source_lifecycle(tmp_path) -> None:
     class AllowDecision:
         def decide(self, trade, crowding_score=None, source_trade=None):

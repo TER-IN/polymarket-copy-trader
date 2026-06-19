@@ -57,6 +57,14 @@ class Settings(BaseSettings):
     max_trade_usd: float | None = Field(default=None, alias="MAX_TRADE_USD")
     copy_ratio: float = Field(default=0.25, alias="COPY_RATIO")
     inverse_share_copy_ratio: float = Field(default=0.1, alias="INVERSE_SHARE_COPY_RATIO")
+    inverse_down_max_source_price: float = Field(
+        default=0.5,
+        alias="INVERSE_DOWN_MAX_SOURCE_PRICE",
+    )
+    max_copied_buys_per_wallet_market: int | None = Field(
+        default=None,
+        alias="MAX_COPIED_BUYS_PER_WALLET_MARKET",
+    )
     max_slippage_cents: float = Field(default=2.0, alias="MAX_SLIPPAGE_CENTS")
     max_buy_price: float | None = Field(default=None, alias="MAX_BUY_PRICE")
     max_seconds_until_market_end: int | None = Field(default=None, alias="MAX_SECONDS_UNTIL_MARKET_END")
@@ -85,6 +93,10 @@ class Settings(BaseSettings):
 
     daily_spend_cap_usd: float | None = Field(default=100.0, alias="DAILY_SPEND_CAP_USD")
     per_market_exposure_cap_usd: float = Field(default=50.0, alias="PER_MARKET_EXPOSURE_CAP_USD")
+    condition_exposure_cap_usd: float | None = Field(
+        default=None,
+        alias="CONDITION_EXPOSURE_CAP_USD",
+    )
     dry_run_starting_balance_usd: float | None = Field(default=None, alias="DRY_RUN_STARTING_BALANCE_USD")
     allow_copy_ratio_gt_one: bool = Field(default=False, alias="ALLOW_COPY_RATIO_GT_ONE")
     allow_short_sells: bool = Field(default=False, alias="ALLOW_SHORT_SELLS")
@@ -127,10 +139,12 @@ class Settings(BaseSettings):
     @field_validator(
         "daily_spend_cap_usd",
         "max_buy_price",
+        "max_copied_buys_per_wallet_market",
         "max_seconds_until_market_end",
         "max_trade_usd",
         "min_net_upside_usd",
         "min_net_upside_percent",
+        "condition_exposure_cap_usd",
         mode="before",
     )
     @classmethod
@@ -151,6 +165,13 @@ class Settings(BaseSettings):
             raise ValueError(
                 "INVERSE_SHARE_COPY_RATIO > 1 requires ALLOW_COPY_RATIO_GT_ONE=true"
             )
+        if not 0 < self.inverse_down_max_source_price < 1:
+            raise ValueError("INVERSE_DOWN_MAX_SOURCE_PRICE must be greater than 0 and less than 1")
+        if (
+            self.max_copied_buys_per_wallet_market is not None
+            and self.max_copied_buys_per_wallet_market <= 0
+        ):
+            raise ValueError("MAX_COPIED_BUYS_PER_WALLET_MARKET must be positive")
         if self.max_slippage_cents < 0:
             raise ValueError("MAX_SLIPPAGE_CENTS cannot be negative")
         if self.max_buy_price is not None and not 0 < self.max_buy_price <= 1:
@@ -169,6 +190,8 @@ class Settings(BaseSettings):
             raise ValueError("NET_UPSIDE_SAFETY_MARGIN_USD cannot be negative")
         if self.daily_spend_cap_usd is not None and self.daily_spend_cap_usd < 0:
             raise ValueError("DAILY_SPEND_CAP_USD cannot be negative")
+        if self.condition_exposure_cap_usd is not None and self.condition_exposure_cap_usd <= 0:
+            raise ValueError("CONDITION_EXPOSURE_CAP_USD must be positive")
         if self.dry_run_starting_balance_usd is not None and self.dry_run_starting_balance_usd < 0:
             raise ValueError("DRY_RUN_STARTING_BALANCE_USD cannot be negative")
         return self

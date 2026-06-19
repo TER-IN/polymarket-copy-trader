@@ -49,6 +49,7 @@ class RiskMismatchScope(StrEnum):
 class OutcomeSelectionMode(StrEnum):
     SOURCE = "source"
     INVERSE_UP_DOWN = "inverse_up_down"
+    INVERSE_DOWN_UNDERDOG = "inverse_down_underdog"
 
 
 class MarketTypeFilter(StrEnum):

@@ -10,6 +10,7 @@ from models import (
     CopyDecision,
     CrowdingScore,
     MarketTypeFilter,
+    OutcomeSelectionMode,
     RiskMismatchScope,
     SourceTokenStatus,
     TradeEvent,
@@ -102,6 +103,10 @@ class DecisionEngine:
             "strategy_config": {
                 "copy_ratio": self.settings.copy_ratio,
                 "inverse_share_copy_ratio": self.settings.inverse_share_copy_ratio,
+                "inverse_down_max_source_price": self.settings.inverse_down_max_source_price,
+                "max_copied_buys_per_wallet_market": (
+                    self.settings.max_copied_buys_per_wallet_market
+                ),
                 "max_trade_usd": self.settings.max_trade_usd,
                 "max_slippage_cents": self.settings.max_slippage_cents,
                 "max_buy_price": self.settings.max_buy_price,
@@ -115,6 +120,7 @@ class DecisionEngine:
                 "include_exit_fee_in_upside": self.settings.include_exit_fee_in_upside,
                 "daily_spend_cap_usd": self.settings.daily_spend_cap_usd,
                 "per_market_exposure_cap_usd": self.settings.per_market_exposure_cap_usd,
+                "condition_exposure_cap_usd": self.settings.condition_exposure_cap_usd,
                 "outcome_selection_mode": self.settings.outcome_selection_mode.value,
                 "allow_market_title_keywords": self.settings.allow_market_title_keywords,
                 "risk_mismatch_scope": self.settings.risk_mismatch_scope.value,
@@ -201,6 +207,17 @@ class DecisionEngine:
 
         metadata = None
         if trade.side == TradeSide.BUY:
+            copied_buy_count = self.db.copied_buy_count_for_wallet_market(source_trade)
+            details["copied_buy_count_for_wallet_market"] = copied_buy_count
+            if (
+                self.settings.max_copied_buys_per_wallet_market is not None
+                and copied_buy_count >= self.settings.max_copied_buys_per_wallet_market
+            ):
+                return _reject(
+                    "maximum copied buys per wallet/market reached: "
+                    f"{copied_buy_count}/{self.settings.max_copied_buys_per_wallet_market}",
+                    details,
+                )
             metadata = self._market_metadata(trade, token_id, details)
             if isinstance(metadata, CopyDecision):
                 return metadata
@@ -228,7 +245,7 @@ class DecisionEngine:
             position = self.db.get_position(trade_market_key(trade), token_id, trade.outcome or "")
             current_exposure = position.total_cost if position else 0.0
             inverse_share_sizing = (
-                details["outcome_selection_mode"] == "inverse_up_down"
+                details["outcome_selection_mode"] != OutcomeSelectionMode.SOURCE.value
             )
             base_copy_notional = None
             if inverse_share_sizing:
@@ -247,6 +264,13 @@ class DecisionEngine:
                 caps.append(remaining_daily)
             remaining_exposure = self.settings.per_market_exposure_cap_usd - current_exposure
             caps.append(remaining_exposure)
+            condition_exposure = self.db.open_condition_exposure_usd(trade_market_key(trade))
+            remaining_condition_exposure = None
+            if self.settings.condition_exposure_cap_usd is not None:
+                remaining_condition_exposure = (
+                    self.settings.condition_exposure_cap_usd - condition_exposure
+                )
+                caps.append(remaining_condition_exposure)
             if self.balance_provider:
                 try:
                     available_balance = self.balance_provider.available_balance_usd()
@@ -257,6 +281,8 @@ class DecisionEngine:
                 caps.append(available_balance)
             requested_notional = min(caps)
             all_in_limits = [remaining_exposure]
+            if remaining_condition_exposure is not None:
+                all_in_limits.append(remaining_condition_exposure)
             if remaining_daily is not None:
                 all_in_limits.append(remaining_daily)
             if self.balance_provider:
@@ -271,6 +297,8 @@ class DecisionEngine:
                     ),
                     "remaining_daily_cap_usd": remaining_daily,
                     "remaining_market_exposure_usd": remaining_exposure,
+                    "current_condition_exposure_usd": condition_exposure,
+                    "remaining_condition_exposure_usd": remaining_condition_exposure,
                     "requested_copy_notional_usd": requested_notional,
                 }
             )
@@ -278,6 +306,11 @@ class DecisionEngine:
                 return _reject("daily spend cap exhausted", details)
             if remaining_exposure <= 0:
                 return _reject("per-market exposure cap exhausted", details)
+            if (
+                remaining_condition_exposure is not None
+                and remaining_condition_exposure <= 0
+            ):
+                return _reject("condition exposure cap exhausted", details)
             if self.balance_provider and details["available_balance_usd"] <= 0:
                 return _reject("available balance exhausted", details)
             if requested_notional <= 0:

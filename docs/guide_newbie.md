@@ -317,6 +317,31 @@ For slippage, the inverse reference price is `1 - source price`. For example, if
 
 This mode bets against the source trader and should be evaluated as a separate strategy. It is disabled by default.
 
+### Selective inverse Down-underdog mode
+
+For a narrower dry-run hypothesis, the bot can ignore every BUY except a source
+purchase of `Down` below a strict price threshold, then purchase authoritative
+`Up` shares:
+
+```env
+OUTCOME_SELECTION_MODE=inverse_down_underdog
+INVERSE_SHARE_COPY_RATIO=0.10
+INVERSE_DOWN_MAX_SOURCE_PRICE=0.50
+MAX_COPIED_BUYS_PER_WALLET_MARKET=5
+CONDITION_EXPOSURE_CAP_USD=25
+```
+
+With the default threshold, source `BUY Down` at `0.49` can become copied
+`BUY Up`; source `BUY Down` at `0.50` or higher and all source `BUY Up` signals
+are recorded as strategy skips. These skips do not freeze source lifecycle
+state. A later source `SELL Down` can still reduce an existing copied `Up`
+position even if its sell price is above the entry threshold.
+
+`MAX_COPIED_BUYS_PER_WALLET_MARKET` counts accepted BUY orders for one source
+wallet and condition. `CONDITION_EXPOSURE_CAP_USD` sums open cost across every
+copied outcome token in the condition. Both settings are optional and apply to
+all outcome-selection modes when configured.
+
 ## 11. BUY vs SELL Behavior
 
 This project treats buys and sells differently.
