@@ -1,7 +1,7 @@
 import pytest
 
 from config import Settings
-from models import OutcomeSelectionMode, RiskMismatchScope
+from models import CopyMode, OutcomeSelectionMode, RiskMismatchScope
 
 
 def test_env_csv_wallets_parse(monkeypatch) -> None:
@@ -55,3 +55,29 @@ def test_inverse_down_underdog_settings_parse_and_validate(monkeypatch) -> None:
         Settings(max_copied_buys_per_wallet_market=0)
     with pytest.raises(ValueError, match="CONDITION_EXPOSURE_CAP_USD"):
         Settings(condition_exposure_cap_usd=0)
+
+
+def test_shadow_regime_settings_parse_and_validate(monkeypatch) -> None:
+    monkeypatch.setenv("OUTCOME_SELECTION_MODE", "shadow_regime_down_underdog")
+    monkeypatch.setenv("SHADOW_REGIME_WINDOW", "50")
+    monkeypatch.setenv("SHADOW_REGIME_CONFIRMATION_MARKETS", "10")
+
+    settings = Settings()
+
+    assert (
+        settings.outcome_selection_mode
+        == OutcomeSelectionMode.SHADOW_REGIME_DOWN_UNDERDOG
+    )
+    assert settings.shadow_regime_window == 50
+    assert settings.shadow_regime_confirmation_markets == 10
+
+    with pytest.raises(ValueError, match="SHADOW_REGIME_WINDOW"):
+        Settings(shadow_regime_window=0)
+    with pytest.raises(ValueError, match="SHADOW_REGIME_CONFIRMATION_MARKETS"):
+        Settings(shadow_regime_confirmation_markets=0)
+
+    with pytest.raises(ValueError, match="restricted to dry-run"):
+        Settings(
+            copy_mode=CopyMode.LIVE,
+            outcome_selection_mode=OutcomeSelectionMode.SHADOW_REGIME_DOWN_UNDERDOG,
+        ).validate_live_ready(True)

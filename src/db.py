@@ -183,12 +183,33 @@ CREATE TABLE IF NOT EXISTS market_resolution_observations (
   checked_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS shadow_orders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_trade_key TEXT NOT NULL UNIQUE,
+  source_wallet TEXT NOT NULL,
+  market_id TEXT NOT NULL,
+  shadow_asset_id TEXT NOT NULL,
+  shadow_outcome TEXT NOT NULL,
+  opposite_asset_id TEXT NOT NULL,
+  opposite_outcome TEXT NOT NULL,
+  filled_shares REAL NOT NULL,
+  filled_notional_usd REAL NOT NULL,
+  avg_fill_price REAL NOT NULL,
+  estimated_fee_usd REAL NOT NULL DEFAULT 0,
+  market_end_time TEXT,
+  decision_details TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(source_wallet, market_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_target_trades_market_asset
   ON target_trades(market_id, condition_id, asset_id, token_id);
 CREATE INDEX IF NOT EXISTS idx_copy_decisions_created
   ON copy_decisions(created_at);
 CREATE INDEX IF NOT EXISTS idx_resolution_observations_checked
   ON market_resolution_observations(resolved, checked_at);
+CREATE INDEX IF NOT EXISTS idx_shadow_orders_wallet_created
+  ON shadow_orders(source_wallet, created_at);
 """
 
 
@@ -608,6 +629,106 @@ class Database:
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )
+
+    def shadow_order_exists(self, source_wallet: str, market_id: str) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM shadow_orders
+                WHERE lower(source_wallet) = lower(?)
+                  AND market_id = ?
+                LIMIT 1
+                """,
+                (source_wallet, market_id),
+            ).fetchone()
+        return row is not None
+
+    def record_shadow_order(
+        self,
+        source_trade: TradeEvent,
+        shadow_trade: TradeEvent,
+        opposite_asset_id: str,
+        opposite_outcome: str,
+        decision,
+    ) -> None:
+        market_id = shadow_trade.market_id or shadow_trade.condition_id or ""
+        if not market_id or not shadow_trade.asset_id or decision.copy_shares is None:
+            raise ValueError("shadow order requires market, asset, and share sizing")
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO shadow_orders (
+                  source_trade_key, source_wallet, market_id,
+                  shadow_asset_id, shadow_outcome,
+                  opposite_asset_id, opposite_outcome,
+                  filled_shares, filled_notional_usd, avg_fill_price,
+                  estimated_fee_usd, market_end_time, decision_details
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    source_trade.dedupe_key,
+                    source_trade.source_wallet,
+                    market_id,
+                    shadow_trade.asset_id,
+                    shadow_trade.outcome or "",
+                    opposite_asset_id,
+                    opposite_outcome,
+                    decision.copy_shares,
+                    decision.copy_notional_usd,
+                    decision.current_price or shadow_trade.price,
+                    decision.estimated_fee_usd,
+                    decision.details.get("market_end_time"),
+                    json.dumps(decision.details, sort_keys=True),
+                ),
+            )
+
+    def resolved_shadow_order_rows(self, source_wallet: str) -> list[sqlite3.Row]:
+        with self.connect() as conn:
+            return list(
+                conn.execute(
+                    """
+                    SELECT
+                      so.*,
+                      CAST(
+                        json_extract(
+                          mro.payout_by_token_id,
+                          '$."' || so.shadow_asset_id || '"'
+                        ) AS REAL
+                      ) AS shadow_payout_per_share,
+                      mro.checked_at AS resolved_at
+                    FROM shadow_orders so
+                    JOIN market_resolution_observations mro
+                      ON mro.market_id = so.market_id
+                    WHERE lower(so.source_wallet) = lower(?)
+                      AND mro.resolved = 1
+                      AND json_extract(
+                        mro.payout_by_token_id,
+                        '$."' || so.shadow_asset_id || '"'
+                      ) IS NOT NULL
+                    ORDER BY COALESCE(so.market_end_time, so.created_at), so.id
+                    """,
+                    (source_wallet,),
+                )
+            )
+
+    def copied_target_for_wallet_market(self, trade: TradeEvent) -> sqlite3.Row | None:
+        market_id = trade.market_id or trade.condition_id or ""
+        with self.connect() as conn:
+            return conn.execute(
+                """
+                SELECT co.asset_id, co.outcome
+                FROM copied_orders co
+                JOIN target_trades tt ON tt.dedupe_key = co.source_trade_key
+                WHERE lower(tt.source_wallet) = lower(?)
+                  AND COALESCE(tt.market_id, tt.condition_id) = ?
+                  AND co.side = 'BUY'
+                  AND co.status IN ('dry_run', 'submitted', 'filled', 'partial')
+                ORDER BY co.created_at DESC, co.id DESC
+                LIMIT 1
+                """,
+                (trade.source_wallet, market_id),
+            ).fetchone()
 
     def get_position(self, market_id: str, asset_id: str, outcome: str) -> CopiedPosition | None:
         with self.connect() as conn:
@@ -1216,6 +1337,7 @@ class Database:
 
     def reset_simulation(self, include_seen_trades: bool = False) -> dict[str, int]:
         tables = [
+            "shadow_orders",
             "copied_orders",
             "copied_positions",
             "copied_redemptions",

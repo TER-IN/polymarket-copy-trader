@@ -40,17 +40,20 @@ class OutcomeSelector:
     def select(self, source_trade: TradeEvent) -> TradeEvent:
         if self.mode == OutcomeSelectionMode.SOURCE:
             return source_trade
-        if self.mode == OutcomeSelectionMode.INVERSE_DOWN_UNDERDOG:
+        if self.mode in (
+            OutcomeSelectionMode.INVERSE_DOWN_UNDERDOG,
+            OutcomeSelectionMode.SHADOW_REGIME_DOWN_UNDERDOG,
+        ):
             if (source_trade.outcome or "").casefold() != "down":
                 raise OutcomeSelectionSkip(
-                    "inverse Down-underdog signal skipped: source outcome is not Down"
+                    f"{self.mode.value} signal skipped: source outcome is not Down"
                 )
             if (
                 source_trade.side == TradeSide.BUY
                 and source_trade.price >= self.inverse_down_max_source_price
             ):
                 raise OutcomeSelectionSkip(
-                    "inverse Down-underdog signal skipped: "
+                    f"{self.mode.value} signal skipped: "
                     f"source price {source_trade.price:.4f} is not below "
                     f"{self.inverse_down_max_source_price:.4f}"
                 )

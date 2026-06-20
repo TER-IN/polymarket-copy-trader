@@ -117,3 +117,20 @@ def test_inverse_down_underdog_allows_matching_source_sell_above_threshold() -> 
 
     assert selected.asset_id == "up"
     assert selected.outcome == "Up"
+
+
+def test_shadow_regime_uses_same_shadow_signal_as_selective_inverse() -> None:
+    pair = (OutcomeToken("up", "Up"), OutcomeToken("down", "Down"))
+    selector = OutcomeSelector(
+        OutcomeSelectionMode.SHADOW_REGIME_DOWN_UNDERDOG,
+        FakeTokenProvider(pair),
+        inverse_down_max_source_price=0.45,
+    )
+
+    selected = selector.select(make_trade(price=0.4))
+
+    assert selected.asset_id == "up"
+    assert selected.outcome == "Up"
+    assert selected.raw_payload["_outcome_selection"]["mode"] == (
+        "shadow_regime_down_underdog"
+    )

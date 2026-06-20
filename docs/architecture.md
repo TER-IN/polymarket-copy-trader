@@ -13,7 +13,7 @@ This project is dry-run first. Public Polymarket data is used for monitoring, CL
 6. Binary and multi-outcome trades are both represented by the specific traded `asset_id` / `token_id` plus `outcome`.
 7. `Database.insert_trade` deduplicates by transaction, wallet, market/outcome, side, size, and price.
 8. `source_token_states` tracks whether each source token lifecycle is clean, pre-existing, or frozen.
-9. `OutcomeSelector` optionally maps a source `Up`/`Down` token to the authoritative opposite token while preserving the original source event for lifecycle tracking. The selective `inverse_down_underdog` mode ignores nonqualifying signals without freezing lifecycle state.
+9. `OutcomeSelector` optionally maps a source `Up`/`Down` token to the authoritative opposite token while preserving the original source event for lifecycle tracking. The selective `inverse_down_underdog` mode ignores nonqualifying signals without freezing lifecycle state. The shadow-regime mode first evaluates and records that same Up trade without executing it, then persistently follows or inverts only those accepted shadow signals.
 10. `CrowdingAnalyzer` optionally checks nearby same-market/outcome trades and stores "suspected copy pressure".
 11. `DecisionEngine` sizes source-mode buys by copied notional and inverse Up/Down buys by a configured fraction of source shares, then applies age, slippage, maximum buy price, market-end window, available balance, liquidity, crowding, daily spend, per-token and condition-wide exposure, accepted-entry count, source-position lifecycle, and sell-position checks.
 12. `Executor` records dry-run orders or submits guarded live FAK orders through `py-clob-client`.
@@ -24,6 +24,7 @@ This project is dry-run first. Public Polymarket data is used for monitoring, CL
 17. `funds.py` derives replenishable dry-run cash from local orders/settlements and reads authenticated collateral balance in live mode.
 18. `copy_decisions` stores the exact decision-time risk snapshot used by Source States.
 19. `SettlementAuditor` previews or applies authoritative corrections to legacy condition-level source-redemption settlements.
+20. `shadow_orders` stores one executable paper-only Up order per source wallet and market. `shadow_regime.py` deterministically replays resolved shadow outcomes to derive warm-up, active path, and pending switch confirmation across restarts.
 
 ## Live Trading Boundary
 

@@ -3,7 +3,7 @@ from dataclasses import replace
 from zoneinfo import ZoneInfo
 
 from db import Database
-from models import RedemptionEvent, SourceTokenStatus, TradeEvent, TradeSide
+from models import CopyDecision, RedemptionEvent, SourceTokenStatus, TradeEvent, TradeSide
 
 
 def make_trade(size: float = 10, price: float = 0.5) -> TradeEvent:
@@ -31,6 +31,48 @@ def test_insert_trade_deduplicates(tmp_path) -> None:
 
     assert db.insert_trade(trade) is True
     assert db.insert_trade(trade) is False
+
+
+def test_shadow_orders_record_once_per_wallet_market_and_resolve(tmp_path) -> None:
+    db = Database(tmp_path / "db.sqlite3")
+    source = replace(
+        make_trade(),
+        asset_id="down",
+        token_id="down",
+        outcome="Down",
+        price=0.4,
+    )
+    shadow = replace(
+        source,
+        asset_id="up",
+        token_id="up",
+        outcome="Up",
+        price=0.6,
+    )
+    decision = CopyDecision(
+        True,
+        "copy allowed",
+        copy_notional_usd=6,
+        copy_shares=10,
+        current_price=0.6,
+        estimated_fee_usd=0.1,
+        details={"market_end_time": "2030-01-01T00:00:00+00:00"},
+    )
+
+    db.record_shadow_order(source, shadow, "down", "Down", decision)
+    db.record_shadow_order(source, shadow, "down", "Down", decision)
+    db.record_market_resolution_observation(
+        "m1",
+        True,
+        {"up": 1.0, "down": 0.0},
+        "Market",
+        {},
+    )
+
+    assert db.shadow_order_exists("0xabc", "m1")
+    rows = db.resolved_shadow_order_rows("0xabc")
+    assert len(rows) == 1
+    assert rows[0]["shadow_payout_per_share"] == 1.0
 
 
 def test_wallet_profile_names_are_read_from_latest_trade_payload(tmp_path) -> None:

@@ -61,6 +61,11 @@ class Settings(BaseSettings):
         default=0.5,
         alias="INVERSE_DOWN_MAX_SOURCE_PRICE",
     )
+    shadow_regime_window: int = Field(default=50, alias="SHADOW_REGIME_WINDOW")
+    shadow_regime_confirmation_markets: int = Field(
+        default=10,
+        alias="SHADOW_REGIME_CONFIRMATION_MARKETS",
+    )
     max_copied_buys_per_wallet_market: int | None = Field(
         default=None,
         alias="MAX_COPIED_BUYS_PER_WALLET_MARKET",
@@ -167,6 +172,10 @@ class Settings(BaseSettings):
             )
         if not 0 < self.inverse_down_max_source_price < 1:
             raise ValueError("INVERSE_DOWN_MAX_SOURCE_PRICE must be greater than 0 and less than 1")
+        if self.shadow_regime_window <= 0:
+            raise ValueError("SHADOW_REGIME_WINDOW must be positive")
+        if self.shadow_regime_confirmation_markets <= 0:
+            raise ValueError("SHADOW_REGIME_CONFIRMATION_MARKETS must be positive")
         if (
             self.max_copied_buys_per_wallet_market is not None
             and self.max_copied_buys_per_wallet_market <= 0
@@ -205,6 +214,13 @@ class Settings(BaseSettings):
     def validate_live_ready(self, risk_flag: bool) -> None:
         if self.copy_mode != CopyMode.LIVE:
             return
+        if (
+            self.outcome_selection_mode
+            == OutcomeSelectionMode.SHADOW_REGIME_DOWN_UNDERDOG
+        ):
+            raise ValueError(
+                "shadow_regime_down_underdog is experimental and restricted to dry-run mode"
+            )
         if not risk_flag:
             raise ValueError("live mode requires --i-understand-live-trading-risk")
         if not self.polymarket_private_key:

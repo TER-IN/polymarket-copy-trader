@@ -59,11 +59,13 @@ Important `.env` values:
 - `ON_RISK_MISMATCH`: defaults to `freeze_token`; stop copying a token if a tracked source buy/sell cannot be copied.
 - `RISK_MISMATCH_SCOPE`: `token` preserves the original per-outcome behavior. `wallet_market` blocks subsequent BUYs for both outcomes when any token for that source wallet and market freezes; risk-reducing SELLs remain available.
 - `SOURCE_POSITION_SIZE_THRESHOLD`: minimum source position size to treat as pre-existing at startup.
-- `OUTCOME_SELECTION_MODE`: `source` copies the traded outcome; `inverse_up_down` copies either authoritative opposite token; `inverse_down_underdog` copies `Up` only when the source buys `Down` below the configured threshold.
+- `OUTCOME_SELECTION_MODE`: `source` copies the traded outcome; `inverse_up_down` copies either authoritative opposite token; `inverse_down_underdog` copies `Up` only when the source buys cheap `Down`; `shadow_regime_down_underdog` records those executable Up trades as a shadow strategy and persistently follows or inverts them from rolling resolved performance.
 - `MAX_TRADE_USD`: max copied notional per trade.
 - `COPY_RATIO`: copied fraction of source notional in `source` mode.
 - `INVERSE_SHARE_COPY_RATIO`: copied fraction of source shares in either inverse outcome mode.
 - `INVERSE_DOWN_MAX_SOURCE_PRICE`: strict source-`Down` BUY price ceiling for `inverse_down_underdog`; the default `0.50` requires a price below `0.50`.
+- `SHADOW_REGIME_WINDOW`: resolved shadow-market window used for win rate; default `50`.
+- `SHADOW_REGIME_CONFIRMATION_MARKETS`: consecutive resolved shadow markets required before changing the active follow/invert path; default `10`.
 - `MAX_COPIED_BUYS_PER_WALLET_MARKET`: optional accepted BUY limit for each source wallet and condition.
 - `MAX_SLIPPAGE_CENTS`: max worse price versus the selected outcome's reference price.
 - `MAX_BUY_PRICE`: optional maximum executable price for copied buys.
@@ -91,6 +93,9 @@ Important `.env` values:
 - `CHAIN_ID`: defaults to Polygon `137`.
 
 Never hardcode private keys.
+
+`shadow_regime_down_underdog` is experimental and dry-run only. Inspect its
+current state with `uv run pct show-shadow-regime`.
 
 `show-dashboard` and `show-orders` report mark-to-market PnL using the current best bid as the estimated exit price. Lowering `COPY_RATIO` reduces dollar exposure, but it does not improve trade quality; use slippage, age, liquidity, and wallet filters for that.
 

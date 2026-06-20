@@ -14,6 +14,7 @@ from db import Database
 from models import TradeSide, utc_now
 from polymarket_clob import PublicClobClient
 from polymarket_pnl import PnlPoint, UserPnlClient, daily_candles
+from shadow_regime import calculate_shadow_regime
 
 
 app = FastAPI(title="Polymarket Copy Trader Dashboard")
@@ -49,6 +50,14 @@ def summary() -> dict[str, Any]:
     source_performance = _source_performance(settings.target_wallets, db, pnl_client)
     for entry in source_performance:
         entry["wallet_name"] = wallet_profiles.get(str(entry["wallet"]).lower(), _short_wallet(entry["wallet"]))
+    shadow_regimes = {
+        wallet: calculate_shadow_regime(
+            db.resolved_shadow_order_rows(wallet),
+            settings.shadow_regime_window,
+            settings.shadow_regime_confirmation_markets,
+        ).as_dict()
+        for wallet in settings.target_wallets
+    }
 
     return {
         "generated_at": utc_now().isoformat(),
@@ -59,6 +68,10 @@ def summary() -> dict[str, Any]:
             "copy_ratio": settings.copy_ratio,
             "inverse_share_copy_ratio": settings.inverse_share_copy_ratio,
             "inverse_down_max_source_price": settings.inverse_down_max_source_price,
+            "shadow_regime_window": settings.shadow_regime_window,
+            "shadow_regime_confirmation_markets": (
+                settings.shadow_regime_confirmation_markets
+            ),
             "max_copied_buys_per_wallet_market": (
                 settings.max_copied_buys_per_wallet_market
             ),
@@ -108,6 +121,7 @@ def summary() -> dict[str, Any]:
         "recent_trades": recent_trades,
         "source_states": source_states,
         "source_performance": source_performance,
+        "shadow_regimes": shadow_regimes,
         "wallet_profiles": wallet_profiles,
         "errors": errors,
     }
@@ -1473,12 +1487,21 @@ HTML = """
     }
 
     function renderSettings(data) {
+      const regimeRows = Object.entries(data.shadow_regimes || {}).flatMap(([wallet, regime]) => [
+        [`shadow_regime.${wallet}.resolved`, regime.resolved_markets],
+        [`shadow_regime.${wallet}.win_rate`, regime.shadow_win_rate === null ? "n/a" : `${(regime.shadow_win_rate * 100).toFixed(2)}%`],
+        [`shadow_regime.${wallet}.active`, regime.active_path || "warmup"],
+        [`shadow_regime.${wallet}.desired`, regime.desired_path || "tie/warmup"],
+        [`shadow_regime.${wallet}.pending`, regime.pending_path || "none"],
+        [`shadow_regime.${wallet}.confirmation`, `${regime.confirmation_count}/${regime.confirmation_required}`],
+      ]);
       const rows = Object.entries(data.settings)
         .concat([
           ["mode", data.mode],
           ["target_wallets", data.target_wallets.join(", ") || "(none)"],
           ["stop_trading", data.stop_trading ? "true" : "false"],
         ])
+        .concat(regimeRows)
         .map(([key, value]) => `<div class="kv"><span>${fmt.text(key)}</span><code>${fmt.text(value)}</code></div>`)
         .join("");
       document.getElementById("settings").innerHTML = `<div class="settings">${rows}</div>`;

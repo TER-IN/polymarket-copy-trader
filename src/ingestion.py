@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import signal
 import time
+from dataclasses import replace
 from datetime import datetime
 from datetime import timezone
 
@@ -11,11 +12,12 @@ from crowding import CrowdingAnalyzer
 from db import Database
 from decision_engine import DecisionEngine
 from execution import Executor
-from models import OutcomeSelectionMode, RedemptionEvent, TradeEvent, utc_now
+from models import OutcomeSelectionMode, RedemptionEvent, TradeEvent, TradeSide, utc_now
 from outcome_selection import OutcomeSelectionError, OutcomeSelectionSkip, OutcomeSelector
 from polymarket_data import PolymarketDataClient
 from redemption import RedemptionExecutor
 from resolution import ResolutionScanner
+from shadow_regime import ShadowRegimePath, calculate_shadow_regime
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +188,18 @@ class PollingIngestor:
             self.db.log_error("outcome_selection", exc, trade.raw_payload)
             return True
 
+        if (
+            self.settings.outcome_selection_mode
+            == OutcomeSelectionMode.SHADOW_REGIME_DOWN_UNDERDOG
+        ):
+            return self._process_shadow_regime_trade(
+                trade,
+                selected_trade,
+                crowding_score,
+                observed_at,
+                processing_started,
+            )
+
         try:
             decision = self.decision_engine.decide(
                 selected_trade,
@@ -206,6 +220,261 @@ class PollingIngestor:
             self.db.freeze_source_token_for_trade(trade, str(exc))
             self.db.log_error("process_trade", exc, trade.raw_payload)
         return True
+
+    def _process_shadow_regime_trade(
+        self,
+        source_trade: TradeEvent,
+        shadow_trade: TradeEvent,
+        crowding_score,
+        observed_at,
+        processing_started: float,
+    ) -> bool:
+        if source_trade.side == TradeSide.SELL:
+            return self._process_shadow_regime_sell(
+                source_trade,
+                shadow_trade,
+                crowding_score,
+                observed_at,
+                processing_started,
+            )
+
+        market_id = shadow_trade.market_id or shadow_trade.condition_id or ""
+        if self.db.shadow_order_exists(source_trade.source_wallet, market_id):
+            details = {
+                "outcome_selection_mode": self.settings.outcome_selection_mode.value,
+                "shadow_market_id": market_id,
+            }
+            _add_timing_details(details, source_trade, observed_at, processing_started)
+            reason = "shadow order already recorded for source wallet/market"
+            self.db.record_copy_decision(source_trade, False, reason, details)
+            logger.info("copy decision=False reason=%s", reason)
+            return True
+
+        try:
+            shadow_decision = self.decision_engine.decide(
+                shadow_trade,
+                crowding_score,
+                source_trade=source_trade,
+            )
+            if not shadow_decision.should_copy:
+                _add_timing_details(
+                    shadow_decision.details,
+                    source_trade,
+                    observed_at,
+                    processing_started,
+                )
+                reason = f"shadow rejected: {shadow_decision.reason}"
+                self.db.record_copy_decision(
+                    source_trade,
+                    False,
+                    reason,
+                    shadow_decision.details,
+                )
+                logger.info("copy decision=False reason=%s", reason)
+                if _should_freeze_rejection(shadow_decision.reason):
+                    self.db.freeze_source_token_for_trade(
+                        source_trade,
+                        shadow_decision.reason,
+                    )
+                return True
+
+            selection = shadow_trade.raw_payload.get("_outcome_selection", {})
+            opposite_asset_id = str(selection.get("source_asset_id") or "")
+            if not opposite_asset_id:
+                raise ValueError("shadow signal is missing the source/opposite asset id")
+            self.db.record_shadow_order(
+                source_trade,
+                shadow_trade,
+                opposite_asset_id,
+                source_trade.outcome or "Down",
+                shadow_decision,
+            )
+
+            snapshot = calculate_shadow_regime(
+                self.db.resolved_shadow_order_rows(source_trade.source_wallet),
+                self.settings.shadow_regime_window,
+                self.settings.shadow_regime_confirmation_markets,
+            )
+            regime_details = snapshot.as_dict()
+            logger.info(
+                "shadow market recorded market=%s resolved=%d/%d win_rate=%s "
+                "active=%s desired=%s pending=%s confirmation=%d/%d",
+                market_id,
+                snapshot.resolved_markets,
+                snapshot.window_size,
+                (
+                    f"{snapshot.shadow_win_rate:.2%}"
+                    if snapshot.shadow_win_rate is not None
+                    else "n/a"
+                ),
+                snapshot.active_path.value if snapshot.active_path else "warmup",
+                snapshot.desired_path.value if snapshot.desired_path else "tie",
+                snapshot.pending_path.value if snapshot.pending_path else "none",
+                snapshot.confirmation_count,
+                snapshot.confirmation_required,
+            )
+
+            if not snapshot.ready:
+                details = shadow_decision.details | {
+                    "shadow_order_recorded": True,
+                    "shadow_regime": regime_details,
+                    "real_execution_path": None,
+                }
+                _add_timing_details(details, source_trade, observed_at, processing_started)
+                reason = (
+                    "shadow order recorded; regime warm-up "
+                    f"{snapshot.resolved_markets}/{snapshot.window_size} resolved markets"
+                )
+                self.db.record_copy_decision(source_trade, False, reason, details)
+                logger.info("copy decision=False reason=%s", reason)
+                return True
+
+            if snapshot.active_path == ShadowRegimePath.FOLLOW:
+                real_trade = self._with_shadow_path(shadow_trade, "follow_shadow")
+                real_decision = shadow_decision
+            else:
+                real_trade = self._inverted_shadow_trade(source_trade, shadow_trade)
+                real_decision = self.decision_engine.decide(
+                    real_trade,
+                    crowding_score,
+                    source_trade=source_trade,
+                )
+
+            real_decision.details.update(
+                {
+                    "shadow_order_recorded": True,
+                    "shadow_regime": regime_details,
+                    "real_execution_path": snapshot.active_path.value,
+                    "shadow_trade": {
+                        "asset_id": shadow_trade.asset_id,
+                        "outcome": shadow_trade.outcome,
+                        "reference_price": shadow_trade.price,
+                        "copy_shares": shadow_decision.copy_shares,
+                        "copy_notional_usd": shadow_decision.copy_notional_usd,
+                        "executable_price": shadow_decision.current_price,
+                        "estimated_fee_usd": shadow_decision.estimated_fee_usd,
+                    },
+                }
+            )
+            _add_timing_details(
+                real_decision.details,
+                source_trade,
+                observed_at,
+                processing_started,
+            )
+            reason = (
+                f"{real_decision.reason}; real path={snapshot.active_path.value}"
+                if real_decision.should_copy
+                else f"real {snapshot.active_path.value} rejected: {real_decision.reason}"
+            )
+            self.db.record_copy_decision(
+                source_trade,
+                real_decision.should_copy,
+                reason,
+                real_decision.details,
+            )
+            logger.info(
+                "copy decision=%s path=%s shadow_win_rate=%.2f%% reason=%s",
+                real_decision.should_copy,
+                snapshot.active_path.value,
+                (snapshot.shadow_win_rate or 0.0) * 100,
+                reason,
+            )
+            if real_decision.should_copy:
+                result = self.executor.execute(
+                    real_trade,
+                    real_decision,
+                    source_trade_key=source_trade.dedupe_key,
+                )
+                if result is None or result.accepted:
+                    self.db.record_copied_source_trade(source_trade)
+            elif _should_freeze_rejection(real_decision.reason):
+                self.db.freeze_source_token_for_trade(
+                    source_trade,
+                    real_decision.reason,
+                )
+        except Exception as exc:
+            logger.exception("shadow-regime processing failed")
+            self.db.freeze_source_token_for_trade(source_trade, str(exc))
+            self.db.log_error("shadow_regime", exc, source_trade.raw_payload)
+        return True
+
+    def _process_shadow_regime_sell(
+        self,
+        source_trade: TradeEvent,
+        shadow_trade: TradeEvent,
+        crowding_score,
+        observed_at,
+        processing_started: float,
+    ) -> bool:
+        copied = self.db.copied_target_for_wallet_market(source_trade)
+        if copied is None:
+            details = {
+                "outcome_selection_mode": self.settings.outcome_selection_mode.value,
+                "real_execution_path": None,
+            }
+            _add_timing_details(details, source_trade, observed_at, processing_started)
+            reason = "shadow-regime sell skipped: no real copied position for market"
+            self.db.record_copy_decision(source_trade, False, reason, details)
+            return True
+
+        target_is_shadow = str(copied["asset_id"]) == str(shadow_trade.asset_id)
+        target_trade = (
+            self._with_shadow_path(shadow_trade, "follow_shadow")
+            if target_is_shadow
+            else self._inverted_shadow_trade(source_trade, shadow_trade)
+        )
+        decision = self.decision_engine.decide(
+            target_trade,
+            crowding_score,
+            source_trade=source_trade,
+        )
+        decision.details["real_execution_path"] = (
+            "follow_shadow" if target_is_shadow else "invert_shadow"
+        )
+        _add_timing_details(decision.details, source_trade, observed_at, processing_started)
+        self.db.record_copy_decision(
+            source_trade,
+            decision.should_copy,
+            decision.reason,
+            decision.details,
+        )
+        if decision.should_copy:
+            self.executor.execute(
+                target_trade,
+                decision,
+                source_trade_key=source_trade.dedupe_key,
+            )
+        return True
+
+    @staticmethod
+    def _with_shadow_path(trade: TradeEvent, path: str) -> TradeEvent:
+        selection = trade.raw_payload.get("_outcome_selection", {}) | {
+            "real_execution_path": path,
+        }
+        return replace(
+            trade,
+            raw_payload=trade.raw_payload | {"_outcome_selection": selection},
+        )
+
+    @staticmethod
+    def _inverted_shadow_trade(
+        source_trade: TradeEvent,
+        shadow_trade: TradeEvent,
+    ) -> TradeEvent:
+        source_asset_id = source_trade.asset_id or source_trade.token_id
+        selection = shadow_trade.raw_payload.get("_outcome_selection", {}) | {
+            "copied_asset_id": source_asset_id,
+            "copied_outcome": source_trade.outcome,
+            "reference_price": source_trade.price,
+            "real_execution_path": "invert_shadow",
+        }
+        return replace(
+            source_trade,
+            asset_id=source_asset_id,
+            token_id=source_asset_id,
+            raw_payload=source_trade.raw_payload | {"_outcome_selection": selection},
+        )
 
     def _select_outcome(self, trade: TradeEvent) -> TradeEvent:
         if self.outcome_selector:

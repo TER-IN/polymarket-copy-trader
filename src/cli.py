@@ -24,6 +24,7 @@ from polymarket_gamma import GammaClient
 from redemption import RedemptionExecutor
 from resolution import ResolutionScanner
 from settlement_audit import SettlementAuditor
+from shadow_regime import calculate_shadow_regime
 
 app = typer.Typer(no_args_is_help=True)
 console = Console()
@@ -93,6 +94,48 @@ def run_live(
     """Run authenticated live copy trading with hard safety checks."""
     settings = Settings(copy_mode=CopyMode.LIVE)
     run(settings, risk_flag=i_understand_live_trading_risk)
+
+
+@app.command("show-shadow-regime")
+def show_shadow_regime() -> None:
+    """Show shadow-strategy warm-up, win rate, and active real execution path."""
+    settings = Settings()
+    db = Database(settings.sqlite_path())
+    table = Table(title="Shadow Regime")
+    for column in (
+        "wallet",
+        "resolved",
+        "window wins",
+        "win rate",
+        "active",
+        "desired",
+        "pending",
+        "confirmation",
+        "switches",
+    ):
+        table.add_column(column)
+    for wallet in settings.target_wallets:
+        snapshot = calculate_shadow_regime(
+            db.resolved_shadow_order_rows(wallet),
+            settings.shadow_regime_window,
+            settings.shadow_regime_confirmation_markets,
+        )
+        table.add_row(
+            wallet,
+            str(snapshot.resolved_markets),
+            str(snapshot.shadow_wins),
+            (
+                f"{snapshot.shadow_win_rate:.2%}"
+                if snapshot.shadow_win_rate is not None
+                else "n/a"
+            ),
+            snapshot.active_path.value if snapshot.active_path else "warmup",
+            snapshot.desired_path.value if snapshot.desired_path else "tie/warmup",
+            snapshot.pending_path.value if snapshot.pending_path else "none",
+            f"{snapshot.confirmation_count}/{snapshot.confirmation_required}",
+            str(snapshot.switch_count),
+        )
+    console.print(table)
 
 
 @app.command("backfill-wallet")

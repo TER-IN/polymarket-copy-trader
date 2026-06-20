@@ -342,6 +342,52 @@ wallet and condition. `CONDITION_EXPOSURE_CAP_USD` sums open cost across every
 copied outcome token in the condition. Both settings are optional and apply to
 all outcome-selection modes when configured.
 
+### Shadow-regime Down-underdog mode
+
+This dry-run-only experiment uses the selective inverse strategy as a permanent
+paper-only shadow strategy:
+
+```env
+OUTCOME_SELECTION_MODE=shadow_regime_down_underdog
+INVERSE_SHARE_COPY_RATIO=0.10
+INVERSE_DOWN_MAX_SOURCE_PRICE=0.40
+MAX_COPIED_BUYS_PER_WALLET_MARKET=1
+CONDITION_EXPOSURE_CAP_USD=25
+
+SHADOW_REGIME_WINDOW=50
+SHADOW_REGIME_CONFIRMATION_MARKETS=10
+```
+
+Every qualifying source `BUY Down` first goes through the normal
+`inverse_down_underdog` checks as a shadow `BUY Up`. Only a shadow order that
+would have been executable is recorded, and only one is recorded per source
+wallet and market. The first 50 resolved shadow markets are warm-up and create
+no real dry-run orders.
+
+After warm-up:
+
+- shadow win rate above 50% activates `follow_shadow`, so the real dry-run buys
+  the same Up token for each newly accepted shadow order;
+- shadow win rate below 50% activates `invert_shadow`, so the real dry-run buys
+  Down for exactly those same shadow signals;
+- exactly 50% retains the current path, or remains in warm-up if no path has
+  been established.
+
+The active path is persistent. If the rolling 50-market rate crosses to the
+other side of 50%, it must remain there for 10 consecutive newly resolved
+shadow markets before switching. A tie or recovery resets pending confirmation.
+The switch affects the next accepted shadow order; it does not rewrite existing
+positions.
+
+Inspect the state at any time:
+
+```bash
+uv run pct show-shadow-regime
+```
+
+The output reports resolved shadow markets, rolling wins and win rate, active
+path, desired path, pending path, confirmation progress, and switch count.
+
 ## 11. BUY vs SELL Behavior
 
 This project treats buys and sells differently.

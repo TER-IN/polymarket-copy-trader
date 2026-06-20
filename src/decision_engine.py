@@ -104,6 +104,10 @@ class DecisionEngine:
                 "copy_ratio": self.settings.copy_ratio,
                 "inverse_share_copy_ratio": self.settings.inverse_share_copy_ratio,
                 "inverse_down_max_source_price": self.settings.inverse_down_max_source_price,
+                "shadow_regime_window": self.settings.shadow_regime_window,
+                "shadow_regime_confirmation_markets": (
+                    self.settings.shadow_regime_confirmation_markets
+                ),
                 "max_copied_buys_per_wallet_market": (
                     self.settings.max_copied_buys_per_wallet_market
                 ),

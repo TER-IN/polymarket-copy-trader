@@ -50,6 +50,7 @@ class OutcomeSelectionMode(StrEnum):
     SOURCE = "source"
     INVERSE_UP_DOWN = "inverse_up_down"
     INVERSE_DOWN_UNDERDOG = "inverse_down_underdog"
+    SHADOW_REGIME_DOWN_UNDERDOG = "shadow_regime_down_underdog"
 
 
 class MarketTypeFilter(StrEnum):

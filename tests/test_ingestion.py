@@ -7,7 +7,7 @@ from db import Database
 from decision_engine import DecisionEngine
 from execution import Executor
 from ingestion import PollingIngestor
-from models import OutcomeSelectionMode, TradeEvent, TradeSide
+from models import MarketTypeFilter, OutcomeSelectionMode, TradeEvent, TradeSide
 from models import CopyDecision, ExecutionResult
 from outcome_selection import OutcomeSelector
 from polymarket_clob import BookQuote
@@ -227,6 +227,146 @@ def test_inverse_down_underdog_skip_does_not_freeze_source_state(tmp_path) -> No
         ).fetchone()
     assert decision["should_copy"] == 0
     assert "source outcome is not Down" in decision["reason"]
+
+
+def shadow_regime_settings(**overrides) -> Settings:
+    values = {
+        "outcome_selection_mode": OutcomeSelectionMode.SHADOW_REGIME_DOWN_UNDERDOG,
+        "inverse_down_max_source_price": 0.45,
+        "shadow_regime_window": 2,
+        "shadow_regime_confirmation_markets": 2,
+        "inverse_share_copy_ratio": 0.1,
+        "max_trade_usd": 100,
+        "max_trade_age_seconds": 60,
+        "daily_spend_cap_usd": None,
+        "per_market_exposure_cap_usd": 1000,
+        "condition_exposure_cap_usd": None,
+        "enable_crowding_check": False,
+        "max_buy_price": None,
+        "max_seconds_until_market_end": None,
+        "market_type_filter": MarketTypeFilter.ALL,
+        "min_net_upside_usd": None,
+        "min_net_upside_percent": None,
+        "net_upside_safety_margin_usd": 0,
+        "allow_market_title_keywords": [],
+        "dry_run_starting_balance_usd": None,
+    }
+    values.update(overrides)
+    return Settings(**values)
+
+
+def shadow_source_trade(market_id: str, transaction_hash: str) -> TradeEvent:
+    return TradeEvent(
+        source_wallet="0xabc",
+        transaction_hash=transaction_hash,
+        timestamp=datetime.now(timezone.utc),
+        market_id=market_id,
+        condition_id=market_id,
+        asset_id="down",
+        token_id="down",
+        market_title="Bitcoin Up or Down",
+        outcome="Down",
+        side=TradeSide.BUY,
+        price=0.4,
+        size=100,
+        notional_usd=40,
+        raw_payload={},
+    )
+
+
+def seed_shadow_result(db: Database, market_id: str, payout: float) -> None:
+    source = shadow_source_trade(market_id, f"0x{market_id}")
+    shadow = TradeEvent(
+        **{
+            **source.__dict__,
+            "asset_id": "up",
+            "token_id": "up",
+            "outcome": "Up",
+            "price": 0.6,
+        }
+    )
+    decision = CopyDecision(
+        True,
+        "copy allowed",
+        copy_notional_usd=4,
+        copy_shares=10,
+        current_price=0.4,
+        details={"market_end_time": "2020-01-01T00:00:00+00:00"},
+    )
+    db.record_shadow_order(source, shadow, "down", "Down", decision)
+    db.record_market_resolution_observation(
+        market_id,
+        True,
+        {"up": payout, "down": 1.0 - payout},
+        "Bitcoin Up or Down",
+        {},
+    )
+
+
+def shadow_regime_ingestor(settings: Settings, db: Database) -> PollingIngestor:
+    return PollingIngestor(
+        settings,
+        db,
+        FakeDataClient([]),
+        DecisionEngine(settings, db, FakeClob()),
+        Executor(settings, db),
+        outcome_selector=OutcomeSelector(
+            settings.outcome_selection_mode,
+            FakeUpDownProvider(),
+            settings.inverse_down_max_source_price,
+        ),
+    )
+
+
+def test_shadow_regime_records_shadow_order_without_real_order_during_warmup(tmp_path) -> None:
+    settings = shadow_regime_settings()
+    db = Database(tmp_path / "db.sqlite3")
+
+    assert shadow_regime_ingestor(settings, db).process_trade(
+        shadow_source_trade("current", "0xcurrent")
+    )
+
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM shadow_orders").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM copied_orders").fetchone()[0] == 0
+        decision = conn.execute("SELECT reason FROM copy_decisions").fetchone()
+    assert "regime warm-up 0/2" in decision["reason"]
+
+
+def test_shadow_regime_follows_shadow_after_winning_window(tmp_path) -> None:
+    settings = shadow_regime_settings()
+    db = Database(tmp_path / "db.sqlite3")
+    seed_shadow_result(db, "history1", 1.0)
+    seed_shadow_result(db, "history2", 1.0)
+
+    assert shadow_regime_ingestor(settings, db).process_trade(
+        shadow_source_trade("current", "0xcurrent")
+    )
+
+    order = db.copied_order_rows(1)[0]
+    assert order["copied_outcome"] == "Up"
+    with db.connect() as conn:
+        decision = conn.execute("SELECT reason, details FROM copy_decisions").fetchone()
+    assert "real path=follow_shadow" in decision["reason"]
+    assert '"real_execution_path": "follow_shadow"' in decision["details"]
+
+
+def test_shadow_regime_inverts_same_shadow_signal_after_losing_window(tmp_path) -> None:
+    settings = shadow_regime_settings()
+    db = Database(tmp_path / "db.sqlite3")
+    seed_shadow_result(db, "history1", 0.0)
+    seed_shadow_result(db, "history2", 0.0)
+
+    assert shadow_regime_ingestor(settings, db).process_trade(
+        shadow_source_trade("current", "0xcurrent")
+    )
+
+    order = db.copied_order_rows(1)[0]
+    assert order["copied_outcome"] == "Down"
+    with db.connect() as conn:
+        decision = conn.execute("SELECT reason, details FROM copy_decisions").fetchone()
+    assert "real path=invert_shadow" in decision["reason"]
+    assert '"real_execution_path": "invert_shadow"' in decision["details"]
 
 
 def test_stop_block_does_not_advance_source_lifecycle(tmp_path) -> None:
