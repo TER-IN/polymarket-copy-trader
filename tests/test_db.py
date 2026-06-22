@@ -33,6 +33,32 @@ def test_insert_trade_deduplicates(tmp_path) -> None:
     assert db.insert_trade(trade) is False
 
 
+def test_latest_settings_snapshot_returns_most_recent_settings(tmp_path) -> None:
+    db = Database(tmp_path / "db.sqlite3")
+    db.snapshot_settings('{"shadow_regime_window": 50}')
+    db.snapshot_settings('{"shadow_regime_window": 42}')
+
+    snapshot = db.latest_settings_snapshot()
+
+    assert snapshot is not None
+    assert snapshot[0]["shadow_regime_window"] == 42
+    assert snapshot[1]
+
+
+def test_shadow_regime_override_is_persisted_with_audit_history(tmp_path) -> None:
+    path = tmp_path / "db.sqlite3"
+    db = Database(path)
+
+    db.set_shadow_regime_override("0xABC", "invert_shadow", "test switch")
+
+    restarted = Database(path)
+    assert restarted.shadow_regime_override("0xabc") == "invert_shadow"
+    history = restarted.shadow_regime_control_history_rows("0xABC")
+    assert history[0]["previous_override_path"] == "auto"
+    assert history[0]["override_path"] == "invert_shadow"
+    assert history[0]["reason"] == "test switch"
+
+
 def test_shadow_orders_record_once_per_wallet_market_and_resolve(tmp_path) -> None:
     db = Database(tmp_path / "db.sqlite3")
     source = replace(
@@ -73,6 +99,8 @@ def test_shadow_orders_record_once_per_wallet_market_and_resolve(tmp_path) -> No
     rows = db.resolved_shadow_order_rows("0xabc")
     assert len(rows) == 1
     assert rows[0]["shadow_payout_per_share"] == 1.0
+    assert rows[0]["opposite_should_copy"] == 1
+    assert rows[0]["opposite_filled_shares"] == 10
 
 
 def test_wallet_profile_names_are_read_from_latest_trade_payload(tmp_path) -> None:

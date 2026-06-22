@@ -196,10 +196,36 @@ CREATE TABLE IF NOT EXISTS shadow_orders (
   filled_notional_usd REAL NOT NULL,
   avg_fill_price REAL NOT NULL,
   estimated_fee_usd REAL NOT NULL DEFAULT 0,
+  opposite_should_copy INTEGER,
+  opposite_reason TEXT,
+  opposite_filled_shares REAL,
+  opposite_filled_notional_usd REAL,
+  opposite_avg_fill_price REAL,
+  opposite_estimated_fee_usd REAL,
+  opposite_allowed_price REAL,
+  opposite_decision_details TEXT NOT NULL DEFAULT '{}',
+  opposite_quoted_at TEXT,
   market_end_time TEXT,
   decision_details TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(source_wallet, market_id)
+);
+
+CREATE TABLE IF NOT EXISTS shadow_regime_controls (
+  source_wallet TEXT PRIMARY KEY COLLATE NOCASE,
+  override_path TEXT NOT NULL DEFAULT 'auto',
+  updated_at TEXT NOT NULL,
+  CHECK (override_path IN ('auto', 'follow_shadow', 'invert_shadow'))
+);
+
+CREATE TABLE IF NOT EXISTS shadow_regime_control_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_wallet TEXT NOT NULL,
+  override_path TEXT NOT NULL,
+  previous_override_path TEXT,
+  reason TEXT,
+  created_at TEXT NOT NULL,
+  CHECK (override_path IN ('auto', 'follow_shadow', 'invert_shadow'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_target_trades_market_asset
@@ -239,6 +265,20 @@ class Database:
             _ensure_column(conn, "copied_orders", "quote_snapshot", "TEXT NOT NULL DEFAULT '{}'")
             _ensure_column(conn, "copied_orders", "recorded_at", "TEXT")
             _ensure_column(conn, "target_trades", "observed_at", "TEXT")
+            _ensure_column(conn, "shadow_orders", "opposite_should_copy", "INTEGER")
+            _ensure_column(conn, "shadow_orders", "opposite_reason", "TEXT")
+            _ensure_column(conn, "shadow_orders", "opposite_filled_shares", "REAL")
+            _ensure_column(conn, "shadow_orders", "opposite_filled_notional_usd", "REAL")
+            _ensure_column(conn, "shadow_orders", "opposite_avg_fill_price", "REAL")
+            _ensure_column(conn, "shadow_orders", "opposite_estimated_fee_usd", "REAL")
+            _ensure_column(conn, "shadow_orders", "opposite_allowed_price", "REAL")
+            _ensure_column(
+                conn,
+                "shadow_orders",
+                "opposite_decision_details",
+                "TEXT NOT NULL DEFAULT '{}'",
+            )
+            _ensure_column(conn, "shadow_orders", "opposite_quoted_at", "TEXT")
 
     def reset_source_baseline(self, wallet: str) -> None:
         with self.connect() as conn:
@@ -651,10 +691,12 @@ class Database:
         opposite_asset_id: str,
         opposite_outcome: str,
         decision,
+        opposite_decision=None,
     ) -> None:
         market_id = shadow_trade.market_id or shadow_trade.condition_id or ""
         if not market_id or not shadow_trade.asset_id or decision.copy_shares is None:
             raise ValueError("shadow order requires market, asset, and share sizing")
+        opposite_decision = opposite_decision or decision
         with self.connect() as conn:
             conn.execute(
                 """
@@ -663,8 +705,13 @@ class Database:
                   shadow_asset_id, shadow_outcome,
                   opposite_asset_id, opposite_outcome,
                   filled_shares, filled_notional_usd, avg_fill_price,
-                  estimated_fee_usd, market_end_time, decision_details
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  estimated_fee_usd,
+                  opposite_should_copy, opposite_reason,
+                  opposite_filled_shares, opposite_filled_notional_usd,
+                  opposite_avg_fill_price, opposite_estimated_fee_usd,
+                  opposite_allowed_price, opposite_decision_details,
+                  opposite_quoted_at, market_end_time, decision_details
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     source_trade.dedupe_key,
@@ -678,9 +725,101 @@ class Database:
                     decision.copy_notional_usd,
                     decision.current_price or shadow_trade.price,
                     decision.estimated_fee_usd,
+                    int(opposite_decision.should_copy),
+                    opposite_decision.reason,
+                    opposite_decision.copy_shares,
+                    opposite_decision.copy_notional_usd,
+                    opposite_decision.current_price,
+                    opposite_decision.estimated_fee_usd,
+                    opposite_decision.allowed_price,
+                    json.dumps(opposite_decision.details, sort_keys=True),
+                    datetime.now(timezone.utc).isoformat(),
                     decision.details.get("market_end_time"),
                     json.dumps(decision.details, sort_keys=True),
                 ),
+            )
+
+    def shadow_regime_override(self, source_wallet: str) -> str:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT override_path
+                FROM shadow_regime_controls
+                WHERE lower(source_wallet) = lower(?)
+                """,
+                (source_wallet,),
+            ).fetchone()
+        return str(row["override_path"]) if row else "auto"
+
+    def set_shadow_regime_override(
+        self,
+        source_wallet: str,
+        override_path: str,
+        reason: str | None = None,
+    ) -> None:
+        if override_path not in {"auto", "follow_shadow", "invert_shadow"}:
+            raise ValueError(f"invalid shadow regime override: {override_path}")
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT override_path
+                FROM shadow_regime_controls
+                WHERE lower(source_wallet) = lower(?)
+                """,
+                (source_wallet,),
+            ).fetchone()
+            previous = str(existing["override_path"]) if existing else "auto"
+            conn.execute(
+                """
+                INSERT INTO shadow_regime_controls (
+                  source_wallet, override_path, updated_at
+                ) VALUES (?, ?, ?)
+                ON CONFLICT(source_wallet) DO UPDATE SET
+                  override_path = excluded.override_path,
+                  updated_at = excluded.updated_at
+                """,
+                (source_wallet, override_path, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO shadow_regime_control_history (
+                  source_wallet, override_path, previous_override_path,
+                  reason, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (source_wallet, override_path, previous, reason, now),
+            )
+
+    def shadow_regime_control_rows(self) -> list[sqlite3.Row]:
+        with self.connect() as conn:
+            return list(
+                conn.execute(
+                    """
+                    SELECT source_wallet, override_path, updated_at
+                    FROM shadow_regime_controls
+                    ORDER BY lower(source_wallet)
+                    """
+                )
+            )
+
+    def shadow_regime_control_history_rows(
+        self,
+        source_wallet: str,
+        limit: int = 20,
+    ) -> list[sqlite3.Row]:
+        with self.connect() as conn:
+            return list(
+                conn.execute(
+                    """
+                    SELECT *
+                    FROM shadow_regime_control_history
+                    WHERE lower(source_wallet) = lower(?)
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (source_wallet, limit),
+                )
             )
 
     def resolved_shadow_order_rows(self, source_wallet: str) -> list[sqlite3.Row]:
@@ -985,6 +1124,20 @@ class Database:
     def snapshot_settings(self, settings_json: str) -> None:
         with self.connect() as conn:
             conn.execute("INSERT INTO settings_snapshot (settings_json) VALUES (?)", (settings_json,))
+
+    def latest_settings_snapshot(self) -> tuple[dict[str, object], str] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT settings_json, created_at
+                FROM settings_snapshot
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row["settings_json"]), str(row["created_at"])
 
     def recent_trades(self, limit: int = 20) -> list[sqlite3.Row]:
         with self.connect() as conn:

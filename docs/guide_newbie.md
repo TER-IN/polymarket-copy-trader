@@ -356,13 +356,16 @@ CONDITION_EXPOSURE_CAP_USD=25
 
 SHADOW_REGIME_WINDOW=50
 SHADOW_REGIME_CONFIRMATION_MARKETS=10
+SHADOW_REGIME_INITIAL_PATH=warmup
 ```
 
 Every qualifying source `BUY Down` first goes through the normal
 `inverse_down_underdog` checks as a shadow `BUY Up`. Only a shadow order that
 would have been executable is recorded, and only one is recorded per source
 wallet and market. The first 50 resolved shadow markets are warm-up and create
-no real dry-run orders.
+no real dry-run orders when `SHADOW_REGIME_INITIAL_PATH=warmup`. Set the initial
+path to `follow_shadow` or `invert_shadow` to place real dry-run orders
+immediately while the first statistical window accumulates.
 
 After warm-up:
 
@@ -384,6 +387,19 @@ Inspect the state at any time:
 ```bash
 uv run pct show-shadow-regime
 ```
+
+The calculated automatic path and the effective execution path are shown
+separately. Override future signals without restarting the bot:
+
+```bash
+uv run pct set-shadow-regime invert_shadow --reason "manual experiment"
+uv run pct set-shadow-regime follow_shadow
+uv run pct set-shadow-regime auto
+```
+
+Overrides are stored in SQLite, survive restarts, and never rewrite existing
+positions. Every accepted shadow signal also records an executable quote and
+decision for its opposite token so future counterfactual PnL can be calculated.
 
 The output reports resolved shadow markets, rolling wins and win rate, active
 path, desired path, pending path, confirmation progress, and switch count.

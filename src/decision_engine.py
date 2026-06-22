@@ -108,6 +108,9 @@ class DecisionEngine:
                 "shadow_regime_confirmation_markets": (
                     self.settings.shadow_regime_confirmation_markets
                 ),
+                "shadow_regime_initial_path": (
+                    self.settings.shadow_regime_initial_path.value
+                ),
                 "max_copied_buys_per_wallet_market": (
                     self.settings.max_copied_buys_per_wallet_market
                 ),

@@ -24,7 +24,12 @@ from polymarket_gamma import GammaClient
 from redemption import RedemptionExecutor
 from resolution import ResolutionScanner
 from settlement_audit import SettlementAuditor
-from shadow_regime import calculate_shadow_regime
+from shadow_regime import (
+    ShadowRegimeInitialPath,
+    ShadowRegimeOverride,
+    calculate_shadow_regime,
+    effective_shadow_regime_path,
+)
 
 app = typer.Typer(no_args_is_help=True)
 console = Console()
@@ -101,24 +106,56 @@ def show_shadow_regime() -> None:
     """Show shadow-strategy warm-up, win rate, and active real execution path."""
     settings = Settings()
     db = Database(settings.sqlite_path())
+    startup_snapshot = db.latest_settings_snapshot()
+    runtime_settings = startup_snapshot[0] if startup_snapshot else {}
+    runtime_window = int(
+        runtime_settings.get("shadow_regime_window", settings.shadow_regime_window)
+    )
+    runtime_confirmation = int(
+        runtime_settings.get(
+            "shadow_regime_confirmation_markets",
+            settings.shadow_regime_confirmation_markets,
+        )
+    )
+    runtime_initial_path = ShadowRegimeInitialPath(
+        runtime_settings.get(
+            "shadow_regime_initial_path",
+            settings.shadow_regime_initial_path.value,
+        )
+    )
+    runtime_wallets = runtime_settings.get("target_wallets", settings.target_wallets)
+    wallets = (
+        [str(wallet) for wallet in runtime_wallets]
+        if isinstance(runtime_wallets, list)
+        else settings.target_wallets
+    )
     table = Table(title="Shadow Regime")
     for column in (
         "wallet",
         "resolved",
         "window wins",
         "win rate",
-        "active",
+        "calculated",
+        "effective",
+        "override",
         "desired",
         "pending",
         "confirmation",
         "switches",
     ):
         table.add_column(column)
-    for wallet in settings.target_wallets:
+    transition_notes: list[str] = []
+    for wallet in wallets:
         snapshot = calculate_shadow_regime(
             db.resolved_shadow_order_rows(wallet),
-            settings.shadow_regime_window,
-            settings.shadow_regime_confirmation_markets,
+            runtime_window,
+            runtime_confirmation,
+        )
+        override = ShadowRegimeOverride(db.shadow_regime_override(wallet))
+        effective_path = effective_shadow_regime_path(
+            snapshot,
+            runtime_initial_path,
+            override,
         )
         table.add_row(
             wallet,
@@ -130,12 +167,67 @@ def show_shadow_regime() -> None:
                 else "n/a"
             ),
             snapshot.active_path.value if snapshot.active_path else "warmup",
+            effective_path.value if effective_path else "warmup",
+            override.value,
             snapshot.desired_path.value if snapshot.desired_path else "tie/warmup",
             snapshot.pending_path.value if snapshot.pending_path else "none",
             f"{snapshot.confirmation_count}/{snapshot.confirmation_required}",
             str(snapshot.switch_count),
         )
+        if snapshot.last_transition_reason:
+            transition_notes.append(
+                f"{wallet} transition at {snapshot.last_transition_at or 'unknown'}: "
+                f"{snapshot.last_transition_reason}"
+            )
     console.print(table)
+    for note in transition_notes:
+        console.print(note)
+    if startup_snapshot:
+        console.print(
+            f"Using bot startup settings recorded at {startup_snapshot[1]}: "
+            f"window={runtime_window}, confirmation={runtime_confirmation}, "
+            f"initial_path={runtime_initial_path.value}."
+        )
+    if (
+        runtime_window != settings.shadow_regime_window
+        or runtime_confirmation != settings.shadow_regime_confirmation_markets
+        or runtime_initial_path != settings.shadow_regime_initial_path
+    ):
+        console.print(
+            "[bold yellow]Warning:[/bold yellow] current .env differs from the bot's "
+            "startup settings. Restart the bot to apply "
+            f"window={settings.shadow_regime_window}, "
+            f"confirmation={settings.shadow_regime_confirmation_markets}, "
+            f"initial_path={settings.shadow_regime_initial_path.value}."
+        )
+
+
+@app.command("set-shadow-regime")
+def set_shadow_regime(
+    path: ShadowRegimeOverride = typer.Argument(
+        ...,
+        help="Effective runtime override: auto, follow_shadow, or invert_shadow.",
+    ),
+    wallet: str | None = typer.Option(
+        None,
+        "--wallet",
+        help="Target one wallet; defaults to every configured target wallet.",
+    ),
+    reason: str | None = typer.Option(
+        None,
+        "--reason",
+        help="Optional audit note explaining the change.",
+    ),
+) -> None:
+    """Persist a restart-safe shadow-regime override for future signals."""
+    settings = Settings()
+    db = Database(settings.sqlite_path())
+    wallets = [wallet] if wallet else settings.target_wallets
+    if not wallets:
+        raise typer.BadParameter("no wallet supplied and TARGET_WALLETS is empty")
+    for target in wallets:
+        db.set_shadow_regime_override(target, path.value, reason)
+        console.print(f"{target}: shadow regime override set to {path.value}.")
 
 
 @app.command("backfill-wallet")

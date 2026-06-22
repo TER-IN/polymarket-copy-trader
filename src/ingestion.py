@@ -17,7 +17,12 @@ from outcome_selection import OutcomeSelectionError, OutcomeSelectionSkip, Outco
 from polymarket_data import PolymarketDataClient
 from redemption import RedemptionExecutor
 from resolution import ResolutionScanner
-from shadow_regime import ShadowRegimePath, calculate_shadow_regime
+from shadow_regime import (
+    ShadowRegimeOverride,
+    ShadowRegimePath,
+    calculate_shadow_regime,
+    effective_shadow_regime_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -282,12 +287,19 @@ class PollingIngestor:
             opposite_asset_id = str(selection.get("source_asset_id") or "")
             if not opposite_asset_id:
                 raise ValueError("shadow signal is missing the source/opposite asset id")
+            inverted_trade = self._inverted_shadow_trade(source_trade, shadow_trade)
+            opposite_decision = self.decision_engine.decide(
+                inverted_trade,
+                crowding_score,
+                source_trade=source_trade,
+            )
             self.db.record_shadow_order(
                 source_trade,
                 shadow_trade,
                 opposite_asset_id,
                 source_trade.outcome or "Down",
                 shadow_decision,
+                opposite_decision,
             )
 
             snapshot = calculate_shadow_regime(
@@ -295,10 +307,23 @@ class PollingIngestor:
                 self.settings.shadow_regime_window,
                 self.settings.shadow_regime_confirmation_markets,
             )
-            regime_details = snapshot.as_dict()
+            override = ShadowRegimeOverride(
+                self.db.shadow_regime_override(source_trade.source_wallet)
+            )
+            effective_path = effective_shadow_regime_path(
+                snapshot,
+                self.settings.shadow_regime_initial_path,
+                override,
+            )
+            regime_details = snapshot.as_dict() | {
+                "initial_path": self.settings.shadow_regime_initial_path.value,
+                "override": override.value,
+                "effective_path": effective_path.value if effective_path else None,
+            }
             logger.info(
                 "shadow market recorded market=%s resolved=%d/%d win_rate=%s "
-                "active=%s desired=%s pending=%s confirmation=%d/%d",
+                "calculated=%s effective=%s override=%s desired=%s pending=%s "
+                "confirmation=%d/%d",
                 market_id,
                 snapshot.resolved_markets,
                 snapshot.window_size,
@@ -308,13 +333,15 @@ class PollingIngestor:
                     else "n/a"
                 ),
                 snapshot.active_path.value if snapshot.active_path else "warmup",
+                effective_path.value if effective_path else "warmup",
+                override.value,
                 snapshot.desired_path.value if snapshot.desired_path else "tie",
                 snapshot.pending_path.value if snapshot.pending_path else "none",
                 snapshot.confirmation_count,
                 snapshot.confirmation_required,
             )
 
-            if not snapshot.ready:
+            if effective_path is None:
                 details = shadow_decision.details | {
                     "shadow_order_recorded": True,
                     "shadow_regime": regime_details,
@@ -329,22 +356,18 @@ class PollingIngestor:
                 logger.info("copy decision=False reason=%s", reason)
                 return True
 
-            if snapshot.active_path == ShadowRegimePath.FOLLOW:
+            if effective_path == ShadowRegimePath.FOLLOW:
                 real_trade = self._with_shadow_path(shadow_trade, "follow_shadow")
                 real_decision = shadow_decision
             else:
-                real_trade = self._inverted_shadow_trade(source_trade, shadow_trade)
-                real_decision = self.decision_engine.decide(
-                    real_trade,
-                    crowding_score,
-                    source_trade=source_trade,
-                )
+                real_trade = inverted_trade
+                real_decision = opposite_decision
 
             real_decision.details.update(
                 {
                     "shadow_order_recorded": True,
                     "shadow_regime": regime_details,
-                    "real_execution_path": snapshot.active_path.value,
+                    "real_execution_path": effective_path.value,
                     "shadow_trade": {
                         "asset_id": shadow_trade.asset_id,
                         "outcome": shadow_trade.outcome,
@@ -353,6 +376,16 @@ class PollingIngestor:
                         "copy_notional_usd": shadow_decision.copy_notional_usd,
                         "executable_price": shadow_decision.current_price,
                         "estimated_fee_usd": shadow_decision.estimated_fee_usd,
+                    },
+                    "opposite_trade": {
+                        "asset_id": inverted_trade.asset_id,
+                        "outcome": inverted_trade.outcome,
+                        "should_copy": opposite_decision.should_copy,
+                        "reason": opposite_decision.reason,
+                        "copy_shares": opposite_decision.copy_shares,
+                        "copy_notional_usd": opposite_decision.copy_notional_usd,
+                        "executable_price": opposite_decision.current_price,
+                        "estimated_fee_usd": opposite_decision.estimated_fee_usd,
                     },
                 }
             )
@@ -363,9 +396,9 @@ class PollingIngestor:
                 processing_started,
             )
             reason = (
-                f"{real_decision.reason}; real path={snapshot.active_path.value}"
+                f"{real_decision.reason}; real path={effective_path.value}"
                 if real_decision.should_copy
-                else f"real {snapshot.active_path.value} rejected: {real_decision.reason}"
+                else f"real {effective_path.value} rejected: {real_decision.reason}"
             )
             self.db.record_copy_decision(
                 source_trade,
@@ -376,7 +409,7 @@ class PollingIngestor:
             logger.info(
                 "copy decision=%s path=%s shadow_win_rate=%.2f%% reason=%s",
                 real_decision.should_copy,
-                snapshot.active_path.value,
+                effective_path.value,
                 (snapshot.shadow_win_rate or 0.0) * 100,
                 reason,
             )

@@ -333,6 +333,44 @@ def test_shadow_regime_records_shadow_order_without_real_order_during_warmup(tmp
     assert "regime warm-up 0/2" in decision["reason"]
 
 
+def test_shadow_regime_initial_path_trades_during_warmup(tmp_path) -> None:
+    settings = shadow_regime_settings(shadow_regime_initial_path="follow_shadow")
+    db = Database(tmp_path / "db.sqlite3")
+
+    assert shadow_regime_ingestor(settings, db).process_trade(
+        shadow_source_trade("current", "0xcurrent")
+    )
+
+    order = db.copied_order_rows(1)[0]
+    assert order["copied_outcome"] == "Up"
+    with db.connect() as conn:
+        shadow = conn.execute("SELECT * FROM shadow_orders").fetchone()
+        decision = conn.execute("SELECT details FROM copy_decisions").fetchone()
+    assert shadow["opposite_should_copy"] == 1
+    assert shadow["opposite_avg_fill_price"] == 0.4
+    assert '"effective_path": "follow_shadow"' in decision["details"]
+
+
+def test_shadow_regime_runtime_override_takes_precedence_and_survives_restart(
+    tmp_path,
+) -> None:
+    settings = shadow_regime_settings(shadow_regime_initial_path="follow_shadow")
+    path = tmp_path / "db.sqlite3"
+    Database(path).set_shadow_regime_override("0xabc", "invert_shadow")
+    db = Database(path)
+
+    assert shadow_regime_ingestor(settings, db).process_trade(
+        shadow_source_trade("current", "0xcurrent")
+    )
+
+    order = db.copied_order_rows(1)[0]
+    assert order["copied_outcome"] == "Down"
+    with db.connect() as conn:
+        decision = conn.execute("SELECT details FROM copy_decisions").fetchone()
+    assert '"override": "invert_shadow"' in decision["details"]
+    assert '"effective_path": "invert_shadow"' in decision["details"]
+
+
 def test_shadow_regime_follows_shadow_after_winning_window(tmp_path) -> None:
     settings = shadow_regime_settings()
     db = Database(tmp_path / "db.sqlite3")

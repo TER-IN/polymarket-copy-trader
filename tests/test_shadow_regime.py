@@ -1,4 +1,10 @@
-from shadow_regime import ShadowRegimePath, calculate_shadow_regime
+from shadow_regime import (
+    ShadowRegimeInitialPath,
+    ShadowRegimeOverride,
+    ShadowRegimePath,
+    calculate_shadow_regime,
+    effective_shadow_regime_path,
+)
 
 
 def rows(results: list[int]) -> list[dict[str, float]]:
@@ -60,3 +66,33 @@ def test_shadow_regime_tie_does_not_start_pending_switch() -> None:
     assert snapshot.active_path == ShadowRegimePath.FOLLOW
     assert snapshot.pending_path is None
     assert snapshot.confirmation_count == 0
+
+
+def test_effective_path_precedence_is_override_then_calculated_then_initial() -> None:
+    warmup = calculate_shadow_regime(rows([1]), window_size=2)
+    calculated = calculate_shadow_regime(rows([1, 1]), window_size=2)
+
+    assert (
+        effective_shadow_regime_path(
+            warmup,
+            ShadowRegimeInitialPath.FOLLOW,
+            ShadowRegimeOverride.AUTO,
+        )
+        == ShadowRegimePath.FOLLOW
+    )
+    assert (
+        effective_shadow_regime_path(
+            calculated,
+            ShadowRegimeInitialPath.INVERT,
+            ShadowRegimeOverride.AUTO,
+        )
+        == ShadowRegimePath.FOLLOW
+    )
+    assert (
+        effective_shadow_regime_path(
+            calculated,
+            ShadowRegimeInitialPath.FOLLOW,
+            ShadowRegimeOverride.INVERT,
+        )
+        == ShadowRegimePath.INVERT
+    )

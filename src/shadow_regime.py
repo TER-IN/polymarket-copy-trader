@@ -10,6 +10,36 @@ class ShadowRegimePath(StrEnum):
     INVERT = "invert_shadow"
 
 
+class ShadowRegimeInitialPath(StrEnum):
+    WARMUP = "warmup"
+    FOLLOW = ShadowRegimePath.FOLLOW
+    INVERT = ShadowRegimePath.INVERT
+
+
+class ShadowRegimeOverride(StrEnum):
+    AUTO = "auto"
+    FOLLOW = ShadowRegimePath.FOLLOW
+    INVERT = ShadowRegimePath.INVERT
+
+
+def effective_shadow_regime_path(
+    snapshot: ShadowRegimeSnapshot,
+    initial_path: ShadowRegimeInitialPath,
+    override: ShadowRegimeOverride,
+) -> ShadowRegimePath | None:
+    if override == ShadowRegimeOverride.FOLLOW:
+        return ShadowRegimePath.FOLLOW
+    if override == ShadowRegimeOverride.INVERT:
+        return ShadowRegimePath.INVERT
+    if snapshot.active_path is not None:
+        return snapshot.active_path
+    if initial_path == ShadowRegimeInitialPath.FOLLOW:
+        return ShadowRegimePath.FOLLOW
+    if initial_path == ShadowRegimeInitialPath.INVERT:
+        return ShadowRegimePath.INVERT
+    return None
+
+
 @dataclass(frozen=True)
 class ShadowRegimeSnapshot:
     resolved_markets: int
@@ -22,6 +52,8 @@ class ShadowRegimeSnapshot:
     confirmation_count: int
     confirmation_required: int
     switch_count: int
+    last_transition_at: str | None
+    last_transition_reason: str | None
 
     @property
     def ready(self) -> bool:
@@ -39,6 +71,8 @@ class ShadowRegimeSnapshot:
             "confirmation_count": self.confirmation_count,
             "confirmation_required": self.confirmation_required,
             "switch_count": self.switch_count,
+            "last_transition_at": self.last_transition_at,
+            "last_transition_reason": self.last_transition_reason,
         }
 
 
@@ -47,9 +81,10 @@ def calculate_shadow_regime(
     window_size: int = 50,
     confirmation_required: int = 10,
 ) -> ShadowRegimeSnapshot:
+    row_list = list(rows)
     results = [
         1 if float(row["shadow_payout_per_share"]) > 0.5 else 0
-        for row in rows
+        for row in row_list
     ]
     active: ShadowRegimePath | None = None
     pending: ShadowRegimePath | None = None
@@ -58,6 +93,8 @@ def calculate_shadow_regime(
     desired: ShadowRegimePath | None = None
     last_wins = 0
     last_rate: float | None = None
+    last_transition_at: str | None = None
+    last_transition_reason: str | None = None
 
     for end in range(window_size, len(results) + 1):
         window = results[end - window_size : end]
@@ -68,6 +105,11 @@ def calculate_shadow_regime(
         if active is None:
             if desired is not None:
                 active = desired
+                last_transition_at = _resolved_at(row_list, end - 1)
+                last_transition_reason = (
+                    f"initial {window_size}-market window win rate "
+                    f"{last_rate:.2%} selected {active.value}"
+                )
             continue
 
         if desired is None or desired == active:
@@ -86,6 +128,11 @@ def calculate_shadow_regime(
             pending = None
             confirmation_count = 0
             switch_count += 1
+            last_transition_at = _resolved_at(row_list, end - 1)
+            last_transition_reason = (
+                f"rolling {window_size}-market win rate {last_rate:.2%} "
+                f"confirmed {active.value} for {confirmation_required} markets"
+            )
 
     if len(results) < window_size:
         recent = results[-window_size:]
@@ -104,6 +151,8 @@ def calculate_shadow_regime(
         confirmation_count=confirmation_count,
         confirmation_required=confirmation_required,
         switch_count=switch_count,
+        last_transition_at=last_transition_at,
+        last_transition_reason=last_transition_reason,
     )
 
 
@@ -113,3 +162,11 @@ def _desired_path(win_rate: float) -> ShadowRegimePath | None:
     if win_rate < 0.5:
         return ShadowRegimePath.INVERT
     return None
+
+
+def _resolved_at(
+    rows: list[Mapping[str, object]],
+    index: int,
+) -> str | None:
+    value = dict(rows[index]).get("resolved_at")
+    return str(value) if value is not None else None

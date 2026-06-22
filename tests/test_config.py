@@ -2,6 +2,7 @@ import pytest
 
 from config import Settings
 from models import CopyMode, OutcomeSelectionMode, RiskMismatchScope
+from shadow_regime import ShadowRegimeInitialPath
 
 
 def test_env_csv_wallets_parse(monkeypatch) -> None:
@@ -61,6 +62,7 @@ def test_shadow_regime_settings_parse_and_validate(monkeypatch) -> None:
     monkeypatch.setenv("OUTCOME_SELECTION_MODE", "shadow_regime_down_underdog")
     monkeypatch.setenv("SHADOW_REGIME_WINDOW", "50")
     monkeypatch.setenv("SHADOW_REGIME_CONFIRMATION_MARKETS", "10")
+    monkeypatch.setenv("SHADOW_REGIME_INITIAL_PATH", "follow_shadow")
 
     settings = Settings()
 
@@ -70,6 +72,7 @@ def test_shadow_regime_settings_parse_and_validate(monkeypatch) -> None:
     )
     assert settings.shadow_regime_window == 50
     assert settings.shadow_regime_confirmation_markets == 10
+    assert settings.shadow_regime_initial_path == ShadowRegimeInitialPath.FOLLOW
 
     with pytest.raises(ValueError, match="SHADOW_REGIME_WINDOW"):
         Settings(shadow_regime_window=0)

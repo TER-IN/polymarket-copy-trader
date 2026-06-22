@@ -16,6 +16,7 @@ from models import (
     SellSizingMode,
     SourcePositionPolicy,
 )
+from shadow_regime import ShadowRegimeInitialPath
 
 
 class Settings(BaseSettings):
@@ -65,6 +66,10 @@ class Settings(BaseSettings):
     shadow_regime_confirmation_markets: int = Field(
         default=10,
         alias="SHADOW_REGIME_CONFIRMATION_MARKETS",
+    )
+    shadow_regime_initial_path: ShadowRegimeInitialPath = Field(
+        default=ShadowRegimeInitialPath.WARMUP,
+        alias="SHADOW_REGIME_INITIAL_PATH",
     )
     max_copied_buys_per_wallet_market: int | None = Field(
         default=None,

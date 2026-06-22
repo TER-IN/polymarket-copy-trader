@@ -66,6 +66,7 @@ Important `.env` values:
 - `INVERSE_DOWN_MAX_SOURCE_PRICE`: strict source-`Down` BUY price ceiling for `inverse_down_underdog`; the default `0.50` requires a price below `0.50`.
 - `SHADOW_REGIME_WINDOW`: resolved shadow-market window used for win rate; default `50`.
 - `SHADOW_REGIME_CONFIRMATION_MARKETS`: consecutive resolved shadow markets required before changing the active follow/invert path; default `10`.
+- `SHADOW_REGIME_INITIAL_PATH`: real path before the first full window: `warmup` (default), `follow_shadow`, or `invert_shadow`.
 - `MAX_COPIED_BUYS_PER_WALLET_MARKET`: optional accepted BUY limit for each source wallet and condition.
 - `MAX_SLIPPAGE_CENTS`: max worse price versus the selected outcome's reference price.
 - `MAX_BUY_PRICE`: optional maximum executable price for copied buys.
@@ -95,7 +96,11 @@ Important `.env` values:
 Never hardcode private keys.
 
 `shadow_regime_down_underdog` is experimental and dry-run only. Inspect its
-current state with `uv run pct show-shadow-regime`.
+current state with `uv run pct show-shadow-regime`. Use
+`uv run pct set-shadow-regime auto|follow_shadow|invert_shadow` to persist a
+restart-safe runtime override for future signals. Accepted shadow signals store
+both the shadow fill and a contemporaneous opposite-side executable decision
+for later counterfactual analysis.
 
 `show-dashboard` and `show-orders` report mark-to-market PnL using the current best bid as the estimated exit price. Lowering `COPY_RATIO` reduces dollar exposure, but it does not improve trade quality; use slippage, age, liquidity, and wallet filters for that.
 

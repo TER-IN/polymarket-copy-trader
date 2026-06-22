@@ -14,7 +14,12 @@ from db import Database
 from models import TradeSide, utc_now
 from polymarket_clob import PublicClobClient
 from polymarket_pnl import PnlPoint, UserPnlClient, daily_candles
-from shadow_regime import calculate_shadow_regime
+from shadow_regime import (
+    ShadowRegimeInitialPath,
+    ShadowRegimeOverride,
+    calculate_shadow_regime,
+    effective_shadow_regime_path,
+)
 
 
 app = FastAPI(title="Polymarket Copy Trader Dashboard")
@@ -50,14 +55,41 @@ def summary() -> dict[str, Any]:
     source_performance = _source_performance(settings.target_wallets, db, pnl_client)
     for entry in source_performance:
         entry["wallet_name"] = wallet_profiles.get(str(entry["wallet"]).lower(), _short_wallet(entry["wallet"]))
-    shadow_regimes = {
-        wallet: calculate_shadow_regime(
-            db.resolved_shadow_order_rows(wallet),
-            settings.shadow_regime_window,
+    startup_snapshot = db.latest_settings_snapshot()
+    runtime_settings = startup_snapshot[0] if startup_snapshot else {}
+    runtime_shadow_window = int(
+        runtime_settings.get("shadow_regime_window", settings.shadow_regime_window)
+    )
+    runtime_shadow_confirmation = int(
+        runtime_settings.get(
+            "shadow_regime_confirmation_markets",
             settings.shadow_regime_confirmation_markets,
-        ).as_dict()
-        for wallet in settings.target_wallets
-    }
+        )
+    )
+    runtime_shadow_initial_path = ShadowRegimeInitialPath(
+        runtime_settings.get(
+            "shadow_regime_initial_path",
+            settings.shadow_regime_initial_path.value,
+        )
+    )
+    shadow_regimes = {}
+    for wallet in settings.target_wallets:
+        snapshot = calculate_shadow_regime(
+            db.resolved_shadow_order_rows(wallet),
+            runtime_shadow_window,
+            runtime_shadow_confirmation,
+        )
+        override = ShadowRegimeOverride(db.shadow_regime_override(wallet))
+        effective_path = effective_shadow_regime_path(
+            snapshot,
+            runtime_shadow_initial_path,
+            override,
+        )
+        shadow_regimes[wallet] = snapshot.as_dict() | {
+            "initial_path": runtime_shadow_initial_path.value,
+            "override": override.value,
+            "effective_path": effective_path.value if effective_path else None,
+        }
 
     return {
         "generated_at": utc_now().isoformat(),
@@ -71,6 +103,21 @@ def summary() -> dict[str, Any]:
             "shadow_regime_window": settings.shadow_regime_window,
             "shadow_regime_confirmation_markets": (
                 settings.shadow_regime_confirmation_markets
+            ),
+            "shadow_regime_initial_path": settings.shadow_regime_initial_path.value,
+            "runtime_shadow_regime_window": runtime_shadow_window,
+            "runtime_shadow_regime_confirmation_markets": (
+                runtime_shadow_confirmation
+            ),
+            "runtime_shadow_regime_initial_path": (
+                runtime_shadow_initial_path.value
+            ),
+            "shadow_regime_settings_mismatch": (
+                runtime_shadow_window != settings.shadow_regime_window
+                or runtime_shadow_confirmation
+                != settings.shadow_regime_confirmation_markets
+                or runtime_shadow_initial_path
+                != settings.shadow_regime_initial_path
             ),
             "max_copied_buys_per_wallet_market": (
                 settings.max_copied_buys_per_wallet_market
@@ -1490,10 +1537,15 @@ HTML = """
       const regimeRows = Object.entries(data.shadow_regimes || {}).flatMap(([wallet, regime]) => [
         [`shadow_regime.${wallet}.resolved`, regime.resolved_markets],
         [`shadow_regime.${wallet}.win_rate`, regime.shadow_win_rate === null ? "n/a" : `${(regime.shadow_win_rate * 100).toFixed(2)}%`],
-        [`shadow_regime.${wallet}.active`, regime.active_path || "warmup"],
+        [`shadow_regime.${wallet}.calculated`, regime.active_path || "warmup"],
+        [`shadow_regime.${wallet}.effective`, regime.effective_path || "warmup"],
+        [`shadow_regime.${wallet}.override`, regime.override || "auto"],
+        [`shadow_regime.${wallet}.initial`, regime.initial_path || "warmup"],
         [`shadow_regime.${wallet}.desired`, regime.desired_path || "tie/warmup"],
         [`shadow_regime.${wallet}.pending`, regime.pending_path || "none"],
         [`shadow_regime.${wallet}.confirmation`, `${regime.confirmation_count}/${regime.confirmation_required}`],
+        [`shadow_regime.${wallet}.last_transition_at`, regime.last_transition_at || "none"],
+        [`shadow_regime.${wallet}.last_transition_reason`, regime.last_transition_reason || "none"],
       ]);
       const rows = Object.entries(data.settings)
         .concat([
