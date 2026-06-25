@@ -105,6 +105,10 @@ def summary() -> dict[str, Any]:
                 settings.shadow_regime_confirmation_markets
             ),
             "shadow_regime_initial_path": settings.shadow_regime_initial_path.value,
+            "shadow_real_trade_policy": settings.shadow_real_trade_policy.value,
+            "shadow_follow_min_price": settings.shadow_follow_min_price,
+            "shadow_invert_min_price": settings.shadow_invert_min_price,
+            "shadow_invert_max_price": settings.shadow_invert_max_price,
             "runtime_shadow_regime_window": runtime_shadow_window,
             "runtime_shadow_regime_confirmation_markets": (
                 runtime_shadow_confirmation

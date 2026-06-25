@@ -14,6 +14,7 @@ from models import (
     RiskMismatchPolicy,
     RiskMismatchScope,
     SellSizingMode,
+    ShadowRealTradePolicy,
     SourcePositionPolicy,
 )
 from shadow_regime import ShadowRegimeInitialPath
@@ -71,6 +72,13 @@ class Settings(BaseSettings):
         default=ShadowRegimeInitialPath.WARMUP,
         alias="SHADOW_REGIME_INITIAL_PATH",
     )
+    shadow_real_trade_policy: ShadowRealTradePolicy = Field(
+        default=ShadowRealTradePolicy.AUTO_REGIME,
+        alias="SHADOW_REAL_TRADE_POLICY",
+    )
+    shadow_follow_min_price: float = Field(default=0.70, alias="SHADOW_FOLLOW_MIN_PRICE")
+    shadow_invert_min_price: float = Field(default=0.40, alias="SHADOW_INVERT_MIN_PRICE")
+    shadow_invert_max_price: float = Field(default=0.45, alias="SHADOW_INVERT_MAX_PRICE")
     max_copied_buys_per_wallet_market: int | None = Field(
         default=None,
         alias="MAX_COPIED_BUYS_PER_WALLET_MARKET",
@@ -181,6 +189,14 @@ class Settings(BaseSettings):
             raise ValueError("SHADOW_REGIME_WINDOW must be positive")
         if self.shadow_regime_confirmation_markets <= 0:
             raise ValueError("SHADOW_REGIME_CONFIRMATION_MARKETS must be positive")
+        if not 0 < self.shadow_follow_min_price < 1:
+            raise ValueError("SHADOW_FOLLOW_MIN_PRICE must be greater than 0 and less than 1")
+        if not 0 < self.shadow_invert_min_price < 1:
+            raise ValueError("SHADOW_INVERT_MIN_PRICE must be greater than 0 and less than 1")
+        if not 0 < self.shadow_invert_max_price < 1:
+            raise ValueError("SHADOW_INVERT_MAX_PRICE must be greater than 0 and less than 1")
+        if self.shadow_invert_min_price >= self.shadow_invert_max_price:
+            raise ValueError("SHADOW_INVERT_MIN_PRICE must be less than SHADOW_INVERT_MAX_PRICE")
         if (
             self.max_copied_buys_per_wallet_market is not None
             and self.max_copied_buys_per_wallet_market <= 0

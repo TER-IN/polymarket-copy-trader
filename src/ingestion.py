@@ -12,7 +12,14 @@ from crowding import CrowdingAnalyzer
 from db import Database
 from decision_engine import DecisionEngine
 from execution import Executor
-from models import OutcomeSelectionMode, RedemptionEvent, TradeEvent, TradeSide, utc_now
+from models import (
+    OutcomeSelectionMode,
+    RedemptionEvent,
+    ShadowRealTradePolicy,
+    TradeEvent,
+    TradeSide,
+    utc_now,
+)
 from outcome_selection import OutcomeSelectionError, OutcomeSelectionSkip, OutcomeSelector
 from polymarket_data import PolymarketDataClient
 from redemption import RedemptionExecutor
@@ -319,6 +326,7 @@ class PollingIngestor:
                 "initial_path": self.settings.shadow_regime_initial_path.value,
                 "override": override.value,
                 "effective_path": effective_path.value if effective_path else None,
+                "real_trade_policy": self.settings.shadow_real_trade_policy.value,
             }
             logger.info(
                 "shadow market recorded market=%s resolved=%d/%d win_rate=%s "
@@ -341,22 +349,55 @@ class PollingIngestor:
                 snapshot.confirmation_required,
             )
 
-            if effective_path is None:
+            policy_path, policy_reason = self._shadow_policy_path(
+                effective_path,
+                shadow_decision,
+                opposite_decision,
+            )
+            regime_details["policy_path"] = policy_path.value if policy_path else None
+            regime_details["policy_reason"] = policy_reason
+
+            if policy_path is None:
                 details = shadow_decision.details | {
                     "shadow_order_recorded": True,
                     "shadow_regime": regime_details,
                     "real_execution_path": None,
+                    "real_trade_policy": self.settings.shadow_real_trade_policy.value,
+                    "real_trade_policy_reason": policy_reason,
+                    "shadow_trade": {
+                        "asset_id": shadow_trade.asset_id,
+                        "outcome": shadow_trade.outcome,
+                        "copy_shares": shadow_decision.copy_shares,
+                        "copy_notional_usd": shadow_decision.copy_notional_usd,
+                        "executable_price": shadow_decision.current_price,
+                        "estimated_fee_usd": shadow_decision.estimated_fee_usd,
+                    },
+                    "opposite_trade": {
+                        "asset_id": inverted_trade.asset_id,
+                        "outcome": inverted_trade.outcome,
+                        "should_copy": opposite_decision.should_copy,
+                        "reason": opposite_decision.reason,
+                        "copy_shares": opposite_decision.copy_shares,
+                        "copy_notional_usd": opposite_decision.copy_notional_usd,
+                        "executable_price": opposite_decision.current_price,
+                        "estimated_fee_usd": opposite_decision.estimated_fee_usd,
+                    },
                 }
                 _add_timing_details(details, source_trade, observed_at, processing_started)
-                reason = (
-                    "shadow order recorded; regime warm-up "
-                    f"{snapshot.resolved_markets}/{snapshot.window_size} resolved markets"
+                reason = "shadow order recorded; " + (
+                    policy_reason
+                    if self.settings.shadow_real_trade_policy
+                    == ShadowRealTradePolicy.PRICE_FILTER
+                    else (
+                        "regime warm-up "
+                        f"{snapshot.resolved_markets}/{snapshot.window_size} resolved markets"
+                    )
                 )
                 self.db.record_copy_decision(source_trade, False, reason, details)
                 logger.info("copy decision=False reason=%s", reason)
                 return True
 
-            if effective_path == ShadowRegimePath.FOLLOW:
+            if policy_path == ShadowRegimePath.FOLLOW:
                 real_trade = self._with_shadow_path(shadow_trade, "follow_shadow")
                 real_decision = shadow_decision
             else:
@@ -367,7 +408,9 @@ class PollingIngestor:
                 {
                     "shadow_order_recorded": True,
                     "shadow_regime": regime_details,
-                    "real_execution_path": effective_path.value,
+                    "real_execution_path": policy_path.value,
+                    "real_trade_policy": self.settings.shadow_real_trade_policy.value,
+                    "real_trade_policy_reason": policy_reason,
                     "shadow_trade": {
                         "asset_id": shadow_trade.asset_id,
                         "outcome": shadow_trade.outcome,
@@ -396,9 +439,9 @@ class PollingIngestor:
                 processing_started,
             )
             reason = (
-                f"{real_decision.reason}; real path={effective_path.value}"
+                f"{real_decision.reason}; real path={policy_path.value}; {policy_reason}"
                 if real_decision.should_copy
-                else f"real {effective_path.value} rejected: {real_decision.reason}"
+                else f"real {policy_path.value} rejected: {real_decision.reason}; {policy_reason}"
             )
             self.db.record_copy_decision(
                 source_trade,
@@ -409,7 +452,7 @@ class PollingIngestor:
             logger.info(
                 "copy decision=%s path=%s shadow_win_rate=%.2f%% reason=%s",
                 real_decision.should_copy,
-                effective_path.value,
+                policy_path.value,
                 (snapshot.shadow_win_rate or 0.0) * 100,
                 reason,
             )
@@ -431,6 +474,59 @@ class PollingIngestor:
             self.db.freeze_source_token_for_trade(source_trade, str(exc))
             self.db.log_error("shadow_regime", exc, source_trade.raw_payload)
         return True
+
+    def _shadow_policy_path(
+        self,
+        regime_path: ShadowRegimePath | None,
+        shadow_decision,
+        opposite_decision,
+    ) -> tuple[ShadowRegimePath | None, str]:
+        if self.settings.shadow_real_trade_policy == ShadowRealTradePolicy.AUTO_REGIME:
+            return regime_path, "auto regime policy"
+
+        shadow_price = shadow_decision.current_price
+        if shadow_price is not None and shadow_price >= self.settings.shadow_follow_min_price:
+            return (
+                ShadowRegimePath.FOLLOW,
+                (
+                    "price filter selected follow_shadow: "
+                    f"shadow executable {shadow_price:.4f} >= "
+                    f"{self.settings.shadow_follow_min_price:.4f}"
+                ),
+            )
+
+        opposite_price = opposite_decision.current_price
+        if (
+            opposite_decision.should_copy
+            and opposite_price is not None
+            and self.settings.shadow_invert_min_price
+            <= opposite_price
+            < self.settings.shadow_invert_max_price
+        ):
+            return (
+                ShadowRegimePath.INVERT,
+                (
+                    "price filter selected invert_shadow: "
+                    f"opposite executable {opposite_price:.4f} in "
+                    f"[{self.settings.shadow_invert_min_price:.4f}, "
+                    f"{self.settings.shadow_invert_max_price:.4f})"
+                ),
+            )
+
+        reason = (
+            "price filter skipped: "
+            f"shadow executable={_fmt_price(shadow_price)} "
+            f"requires >= {self.settings.shadow_follow_min_price:.4f}; "
+        )
+        if not opposite_decision.should_copy:
+            reason += f"opposite rejected: {opposite_decision.reason}"
+        else:
+            reason += (
+                f"opposite executable={_fmt_price(opposite_price)} requires "
+                f"[{self.settings.shadow_invert_min_price:.4f}, "
+                f"{self.settings.shadow_invert_max_price:.4f})"
+            )
+        return None, reason
 
     def _process_shadow_regime_sell(
         self,
@@ -563,6 +659,10 @@ def _should_freeze_rejection(reason: str) -> bool:
         "Up/Down market duration",
     )
     return not reason.startswith(transient_prefixes)
+
+
+def _fmt_price(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.4f}"
 
 
 def _add_timing_details(

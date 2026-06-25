@@ -1,7 +1,7 @@
 import pytest
 
 from config import Settings
-from models import CopyMode, OutcomeSelectionMode, RiskMismatchScope
+from models import CopyMode, OutcomeSelectionMode, RiskMismatchScope, ShadowRealTradePolicy
 from shadow_regime import ShadowRegimeInitialPath
 
 
@@ -63,6 +63,10 @@ def test_shadow_regime_settings_parse_and_validate(monkeypatch) -> None:
     monkeypatch.setenv("SHADOW_REGIME_WINDOW", "50")
     monkeypatch.setenv("SHADOW_REGIME_CONFIRMATION_MARKETS", "10")
     monkeypatch.setenv("SHADOW_REGIME_INITIAL_PATH", "follow_shadow")
+    monkeypatch.setenv("SHADOW_REAL_TRADE_POLICY", "price_filter")
+    monkeypatch.setenv("SHADOW_FOLLOW_MIN_PRICE", "0.70")
+    monkeypatch.setenv("SHADOW_INVERT_MIN_PRICE", "0.40")
+    monkeypatch.setenv("SHADOW_INVERT_MAX_PRICE", "0.45")
 
     settings = Settings()
 
@@ -73,11 +77,17 @@ def test_shadow_regime_settings_parse_and_validate(monkeypatch) -> None:
     assert settings.shadow_regime_window == 50
     assert settings.shadow_regime_confirmation_markets == 10
     assert settings.shadow_regime_initial_path == ShadowRegimeInitialPath.FOLLOW
+    assert settings.shadow_real_trade_policy == ShadowRealTradePolicy.PRICE_FILTER
+    assert settings.shadow_follow_min_price == 0.70
+    assert settings.shadow_invert_min_price == 0.40
+    assert settings.shadow_invert_max_price == 0.45
 
     with pytest.raises(ValueError, match="SHADOW_REGIME_WINDOW"):
         Settings(shadow_regime_window=0)
     with pytest.raises(ValueError, match="SHADOW_REGIME_CONFIRMATION_MARKETS"):
         Settings(shadow_regime_confirmation_markets=0)
+    with pytest.raises(ValueError, match="SHADOW_INVERT_MIN_PRICE"):
+        Settings(shadow_invert_min_price=0.45, shadow_invert_max_price=0.40)
 
     with pytest.raises(ValueError, match="restricted to dry-run"):
         Settings(

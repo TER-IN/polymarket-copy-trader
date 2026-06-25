@@ -53,6 +53,11 @@ class OutcomeSelectionMode(StrEnum):
     SHADOW_REGIME_DOWN_UNDERDOG = "shadow_regime_down_underdog"
 
 
+class ShadowRealTradePolicy(StrEnum):
+    AUTO_REGIME = "auto_regime"
+    PRICE_FILTER = "price_filter"
+
+
 class MarketTypeFilter(StrEnum):
     ALL = "all"
     SHORT_DURATION_UP_DOWN = "short_duration_up_down"

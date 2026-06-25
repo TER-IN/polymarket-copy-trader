@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -77,8 +78,12 @@ def test_first_poll_seeds_existing_trades_without_processing(tmp_path) -> None:
 
 
 class FakeClob:
+    def __init__(self, ask_by_token=None):
+        self.ask_by_token = ask_by_token or {}
+
     def get_quote(self, token_id: str) -> BookQuote:
-        return BookQuote(token_id=token_id, best_bid=0.4, best_ask=0.4, raw={})
+        price = self.ask_by_token.get(token_id, 0.4)
+        return BookQuote(token_id=token_id, best_bid=price, best_ask=price, raw={})
 
 
 class FakeUpDownProvider:
@@ -303,12 +308,16 @@ def seed_shadow_result(db: Database, market_id: str, payout: float) -> None:
     )
 
 
-def shadow_regime_ingestor(settings: Settings, db: Database) -> PollingIngestor:
+def shadow_regime_ingestor(
+    settings: Settings,
+    db: Database,
+    clob: FakeClob | None = None,
+) -> PollingIngestor:
     return PollingIngestor(
         settings,
         db,
         FakeDataClient([]),
-        DecisionEngine(settings, db, FakeClob()),
+        DecisionEngine(settings, db, clob or FakeClob()),
         Executor(settings, db),
         outcome_selector=OutcomeSelector(
             settings.outcome_selection_mode,
@@ -369,6 +378,59 @@ def test_shadow_regime_runtime_override_takes_precedence_and_survives_restart(
         decision = conn.execute("SELECT details FROM copy_decisions").fetchone()
     assert '"override": "invert_shadow"' in decision["details"]
     assert '"effective_path": "invert_shadow"' in decision["details"]
+
+
+def test_shadow_price_filter_follows_high_shadow_price_during_warmup(tmp_path) -> None:
+    settings = shadow_regime_settings(shadow_real_trade_policy="price_filter")
+    db = Database(tmp_path / "db.sqlite3")
+    source = replace(
+        shadow_source_trade("current", "0xcurrent"),
+        price=0.2,
+        notional_usd=20,
+    )
+
+    assert shadow_regime_ingestor(settings, db, FakeClob({"up": 0.72, "down": 0.42})).process_trade(
+        source
+    )
+
+    order = db.copied_order_rows(1)[0]
+    assert order["copied_outcome"] == "Up"
+    with db.connect() as conn:
+        decision = conn.execute("SELECT reason, details FROM copy_decisions").fetchone()
+    assert "price filter selected follow_shadow" in decision["reason"]
+    assert '"real_execution_path": "follow_shadow"' in decision["details"]
+
+
+def test_shadow_price_filter_inverts_mid_price_opposite_during_warmup(tmp_path) -> None:
+    settings = shadow_regime_settings(shadow_real_trade_policy="price_filter")
+    db = Database(tmp_path / "db.sqlite3")
+
+    assert shadow_regime_ingestor(settings, db, FakeClob({"up": 0.62, "down": 0.42})).process_trade(
+        shadow_source_trade("current", "0xcurrent")
+    )
+
+    order = db.copied_order_rows(1)[0]
+    assert order["copied_outcome"] == "Down"
+    with db.connect() as conn:
+        decision = conn.execute("SELECT reason, details FROM copy_decisions").fetchone()
+    assert "price filter selected invert_shadow" in decision["reason"]
+    assert '"real_execution_path": "invert_shadow"' in decision["details"]
+
+
+def test_shadow_price_filter_records_but_skips_unqualified_signal(tmp_path) -> None:
+    settings = shadow_regime_settings(shadow_real_trade_policy="price_filter")
+    db = Database(tmp_path / "db.sqlite3")
+
+    assert shadow_regime_ingestor(settings, db, FakeClob({"up": 0.62, "down": 0.36})).process_trade(
+        shadow_source_trade("current", "0xcurrent")
+    )
+
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM shadow_orders").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM copied_orders").fetchone()[0] == 0
+        decision = conn.execute("SELECT reason, details FROM copy_decisions").fetchone()
+    assert "price filter skipped" in decision["reason"]
+    assert '"real_trade_policy": "price_filter"' in decision["details"]
 
 
 def test_shadow_regime_follows_shadow_after_winning_window(tmp_path) -> None:

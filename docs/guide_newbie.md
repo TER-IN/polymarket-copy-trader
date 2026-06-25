@@ -357,6 +357,10 @@ CONDITION_EXPOSURE_CAP_USD=25
 SHADOW_REGIME_WINDOW=50
 SHADOW_REGIME_CONFIRMATION_MARKETS=10
 SHADOW_REGIME_INITIAL_PATH=warmup
+SHADOW_REAL_TRADE_POLICY=auto_regime
+SHADOW_FOLLOW_MIN_PRICE=0.70
+SHADOW_INVERT_MIN_PRICE=0.40
+SHADOW_INVERT_MAX_PRICE=0.45
 ```
 
 Every qualifying source `BUY Down` first goes through the normal
@@ -400,6 +404,16 @@ uv run pct set-shadow-regime auto
 Overrides are stored in SQLite, survive restarts, and never rewrite existing
 positions. Every accepted shadow signal also records an executable quote and
 decision for its opposite token so future counterfactual PnL can be calculated.
+
+Set `SHADOW_REAL_TRADE_POLICY=price_filter` to ignore the rolling regime for
+real execution and trade only selected price bands:
+
+- follow the shadow Up trade when its executable price is at least
+  `SHADOW_FOLLOW_MIN_PRICE`;
+- otherwise invert to Down when the Down executable price is in
+  `[SHADOW_INVERT_MIN_PRICE, SHADOW_INVERT_MAX_PRICE)`;
+- otherwise record the shadow and opposite quote, but place no real dry-run
+  order.
 
 The output reports resolved shadow markets, rolling wins and win rate, active
 path, desired path, pending path, confirmation progress, and switch count.
