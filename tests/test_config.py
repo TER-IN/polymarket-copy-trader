@@ -65,6 +65,7 @@ def test_shadow_regime_settings_parse_and_validate(monkeypatch) -> None:
     monkeypatch.setenv("SHADOW_REGIME_INITIAL_PATH", "follow_shadow")
     monkeypatch.setenv("SHADOW_REAL_TRADE_POLICY", "price_filter")
     monkeypatch.setenv("SHADOW_FOLLOW_MIN_PRICE", "0.70")
+    monkeypatch.setenv("SHADOW_ENABLE_INVERT_BRANCH", "false")
     monkeypatch.setenv("SHADOW_INVERT_MIN_PRICE", "0.40")
     monkeypatch.setenv("SHADOW_INVERT_MAX_PRICE", "0.45")
 
@@ -79,6 +80,7 @@ def test_shadow_regime_settings_parse_and_validate(monkeypatch) -> None:
     assert settings.shadow_regime_initial_path == ShadowRegimeInitialPath.FOLLOW
     assert settings.shadow_real_trade_policy == ShadowRealTradePolicy.PRICE_FILTER
     assert settings.shadow_follow_min_price == 0.70
+    assert settings.shadow_enable_invert_branch is False
     assert settings.shadow_invert_min_price == 0.40
     assert settings.shadow_invert_max_price == 0.45
 
@@ -88,6 +90,8 @@ def test_shadow_regime_settings_parse_and_validate(monkeypatch) -> None:
         Settings(shadow_regime_confirmation_markets=0)
     with pytest.raises(ValueError, match="SHADOW_INVERT_MIN_PRICE"):
         Settings(shadow_invert_min_price=0.45, shadow_invert_max_price=0.40)
+    monkeypatch.delenv("SHADOW_ENABLE_INVERT_BRANCH")
+    assert Settings().shadow_enable_invert_branch is True
 
     with pytest.raises(ValueError, match="restricted to dry-run"):
         Settings(

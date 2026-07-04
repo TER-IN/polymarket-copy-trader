@@ -240,6 +240,7 @@ def shadow_regime_settings(**overrides) -> Settings:
         "inverse_down_max_source_price": 0.45,
         "shadow_regime_window": 2,
         "shadow_regime_confirmation_markets": 2,
+        "shadow_real_trade_policy": "auto_regime",
         "inverse_share_copy_ratio": 0.1,
         "max_trade_usd": 100,
         "max_trade_age_seconds": 60,
@@ -415,6 +416,25 @@ def test_shadow_price_filter_inverts_mid_price_opposite_during_warmup(tmp_path) 
         decision = conn.execute("SELECT reason, details FROM copy_decisions").fetchone()
     assert "price filter selected invert_shadow" in decision["reason"]
     assert '"real_execution_path": "invert_shadow"' in decision["details"]
+
+
+def test_shadow_price_filter_can_disable_invert_branch(tmp_path) -> None:
+    settings = shadow_regime_settings(
+        shadow_real_trade_policy="price_filter",
+        shadow_enable_invert_branch=False,
+    )
+    db = Database(tmp_path / "db.sqlite3")
+
+    assert shadow_regime_ingestor(settings, db, FakeClob({"up": 0.62, "down": 0.42})).process_trade(
+        shadow_source_trade("current", "0xcurrent")
+    )
+
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM shadow_orders").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM copied_orders").fetchone()[0] == 0
+        decision = conn.execute("SELECT reason, details FROM copy_decisions").fetchone()
+    assert "invert branch disabled" in decision["reason"]
+    assert '"real_execution_path": null' in decision["details"]
 
 
 def test_shadow_price_filter_records_but_skips_unqualified_signal(tmp_path) -> None:

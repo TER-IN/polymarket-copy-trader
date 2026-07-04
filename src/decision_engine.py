@@ -113,6 +113,7 @@ class DecisionEngine:
                 ),
                 "shadow_real_trade_policy": self.settings.shadow_real_trade_policy.value,
                 "shadow_follow_min_price": self.settings.shadow_follow_min_price,
+                "shadow_enable_invert_branch": self.settings.shadow_enable_invert_branch,
                 "shadow_invert_min_price": self.settings.shadow_invert_min_price,
                 "shadow_invert_max_price": self.settings.shadow_invert_max_price,
                 "max_copied_buys_per_wallet_market": (

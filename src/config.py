@@ -77,6 +77,7 @@ class Settings(BaseSettings):
         alias="SHADOW_REAL_TRADE_POLICY",
     )
     shadow_follow_min_price: float = Field(default=0.70, alias="SHADOW_FOLLOW_MIN_PRICE")
+    shadow_enable_invert_branch: bool = Field(default=True, alias="SHADOW_ENABLE_INVERT_BRANCH")
     shadow_invert_min_price: float = Field(default=0.40, alias="SHADOW_INVERT_MIN_PRICE")
     shadow_invert_max_price: float = Field(default=0.45, alias="SHADOW_INVERT_MAX_PRICE")
     max_copied_buys_per_wallet_market: int | None = Field(

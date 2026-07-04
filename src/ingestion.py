@@ -497,6 +497,8 @@ class PollingIngestor:
 
         opposite_price = opposite_decision.current_price
         if (
+            self.settings.shadow_enable_invert_branch
+            and
             opposite_decision.should_copy
             and opposite_price is not None
             and self.settings.shadow_invert_min_price
@@ -520,6 +522,8 @@ class PollingIngestor:
         )
         if not opposite_decision.should_copy:
             reason += f"opposite rejected: {opposite_decision.reason}"
+        elif not self.settings.shadow_enable_invert_branch:
+            reason += "invert branch disabled"
         else:
             reason += (
                 f"opposite executable={_fmt_price(opposite_price)} requires "
