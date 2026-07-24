@@ -77,6 +77,7 @@ class Settings(BaseSettings):
         alias="SHADOW_REAL_TRADE_POLICY",
     )
     shadow_follow_min_price: float = Field(default=0.70, alias="SHADOW_FOLLOW_MIN_PRICE")
+    shadow_follow_max_price: float | None = Field(default=None, alias="SHADOW_FOLLOW_MAX_PRICE")
     shadow_enable_invert_branch: bool = Field(default=True, alias="SHADOW_ENABLE_INVERT_BRANCH")
     shadow_invert_min_price: float = Field(default=0.40, alias="SHADOW_INVERT_MIN_PRICE")
     shadow_invert_max_price: float = Field(default=0.45, alias="SHADOW_INVERT_MAX_PRICE")
@@ -163,6 +164,7 @@ class Settings(BaseSettings):
         "max_trade_usd",
         "min_net_upside_usd",
         "min_net_upside_percent",
+        "shadow_follow_max_price",
         "condition_exposure_cap_usd",
         mode="before",
     )
@@ -192,6 +194,11 @@ class Settings(BaseSettings):
             raise ValueError("SHADOW_REGIME_CONFIRMATION_MARKETS must be positive")
         if not 0 < self.shadow_follow_min_price < 1:
             raise ValueError("SHADOW_FOLLOW_MIN_PRICE must be greater than 0 and less than 1")
+        if self.shadow_follow_max_price is not None:
+            if not 0 < self.shadow_follow_max_price < 1:
+                raise ValueError("SHADOW_FOLLOW_MAX_PRICE must be greater than 0 and less than 1")
+            if self.shadow_follow_min_price >= self.shadow_follow_max_price:
+                raise ValueError("SHADOW_FOLLOW_MIN_PRICE must be less than SHADOW_FOLLOW_MAX_PRICE")
         if not 0 < self.shadow_invert_min_price < 1:
             raise ValueError("SHADOW_INVERT_MIN_PRICE must be greater than 0 and less than 1")
         if not 0 < self.shadow_invert_max_price < 1:

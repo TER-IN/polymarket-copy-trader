@@ -359,6 +359,7 @@ SHADOW_REGIME_CONFIRMATION_MARKETS=10
 SHADOW_REGIME_INITIAL_PATH=warmup
 SHADOW_REAL_TRADE_POLICY=auto_regime
 SHADOW_FOLLOW_MIN_PRICE=0.70
+SHADOW_FOLLOW_MAX_PRICE=
 SHADOW_ENABLE_INVERT_BRANCH=true
 SHADOW_INVERT_MIN_PRICE=0.40
 SHADOW_INVERT_MAX_PRICE=0.45
@@ -410,7 +411,8 @@ Set `SHADOW_REAL_TRADE_POLICY=price_filter` to ignore the rolling regime for
 real execution and trade only selected price bands:
 
 - follow the shadow Up trade when its executable price is at least
-  `SHADOW_FOLLOW_MIN_PRICE`;
+  `SHADOW_FOLLOW_MIN_PRICE`; when `SHADOW_FOLLOW_MAX_PRICE` is set, the
+  executable price must also be below that upper bound;
 - otherwise, when `SHADOW_ENABLE_INVERT_BRANCH=true`, invert to Down when the
   Down executable price is in `[SHADOW_INVERT_MIN_PRICE,
   SHADOW_INVERT_MAX_PRICE)`;

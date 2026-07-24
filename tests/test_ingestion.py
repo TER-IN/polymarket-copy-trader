@@ -241,6 +241,9 @@ def shadow_regime_settings(**overrides) -> Settings:
         "shadow_regime_window": 2,
         "shadow_regime_confirmation_markets": 2,
         "shadow_real_trade_policy": "auto_regime",
+        "shadow_follow_min_price": 0.70,
+        "shadow_follow_max_price": None,
+        "shadow_enable_invert_branch": True,
         "inverse_share_copy_ratio": 0.1,
         "max_trade_usd": 100,
         "max_trade_age_seconds": 60,
@@ -402,6 +405,48 @@ def test_shadow_price_filter_follows_high_shadow_price_during_warmup(tmp_path) -
     assert '"real_execution_path": "follow_shadow"' in decision["details"]
 
 
+def test_shadow_price_filter_follows_shadow_price_band_during_warmup(tmp_path) -> None:
+    settings = shadow_regime_settings(
+        shadow_real_trade_policy="price_filter",
+        shadow_follow_min_price=0.60,
+        shadow_follow_max_price=0.65,
+        shadow_enable_invert_branch=False,
+    )
+    db = Database(tmp_path / "db.sqlite3")
+
+    assert shadow_regime_ingestor(settings, db, FakeClob({"up": 0.62, "down": 0.42})).process_trade(
+        shadow_source_trade("current", "0xcurrent")
+    )
+
+    order = db.copied_order_rows(1)[0]
+    assert order["copied_outcome"] == "Up"
+    with db.connect() as conn:
+        decision = conn.execute("SELECT reason, details FROM copy_decisions").fetchone()
+    assert "shadow executable 0.6200 in [0.6000, 0.6500)" in decision["reason"]
+    assert '"real_execution_path": "follow_shadow"' in decision["details"]
+
+
+def test_shadow_price_filter_skips_shadow_price_above_follow_band(tmp_path) -> None:
+    settings = shadow_regime_settings(
+        shadow_real_trade_policy="price_filter",
+        shadow_follow_min_price=0.60,
+        shadow_follow_max_price=0.65,
+        shadow_enable_invert_branch=False,
+    )
+    db = Database(tmp_path / "db.sqlite3")
+
+    assert shadow_regime_ingestor(settings, db, FakeClob({"up": 0.66, "down": 0.42})).process_trade(
+        shadow_source_trade("current", "0xcurrent")
+    )
+
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM shadow_orders").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM copied_orders").fetchone()[0] == 0
+        decision = conn.execute("SELECT reason, details FROM copy_decisions").fetchone()
+    assert "requires [0.6000, 0.6500)" in decision["reason"]
+    assert '"real_execution_path": null' in decision["details"]
+
+
 def test_shadow_price_filter_inverts_mid_price_opposite_during_warmup(tmp_path) -> None:
     settings = shadow_regime_settings(shadow_real_trade_policy="price_filter")
     db = Database(tmp_path / "db.sqlite3")
@@ -498,7 +543,10 @@ def test_stop_block_does_not_advance_source_lifecycle(tmp_path) -> None:
         def execute(self, trade, decision, source_trade_key=None):
             return ExecutionResult(False, "blocked")
 
-    settings = Settings(enable_crowding_check=False)
+    settings = Settings(
+        enable_crowding_check=False,
+        outcome_selection_mode=OutcomeSelectionMode.SOURCE,
+    )
     db = Database(tmp_path / "db.sqlite3")
     ingestor = PollingIngestor(
         settings,
@@ -518,7 +566,10 @@ def test_processed_trade_records_precise_observation_and_decision_timing(tmp_pat
         def decide(self, trade, crowding_score=None, source_trade=None):
             return CopyDecision(False, "test rejection", details={})
 
-    settings = Settings(enable_crowding_check=False)
+    settings = Settings(
+        enable_crowding_check=False,
+        outcome_selection_mode=OutcomeSelectionMode.SOURCE,
+    )
     db = Database(tmp_path / "db.sqlite3")
     ingestor = PollingIngestor(
         settings,
@@ -549,7 +600,10 @@ def test_market_freeze_rejection_does_not_freeze_opposite_token_state(tmp_path) 
                 details={},
             )
 
-    settings = Settings(enable_crowding_check=False)
+    settings = Settings(
+        enable_crowding_check=False,
+        outcome_selection_mode=OutcomeSelectionMode.SOURCE,
+    )
     db = Database(tmp_path / "db.sqlite3")
     ingestor = PollingIngestor(
         settings,

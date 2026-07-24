@@ -107,6 +107,7 @@ def summary() -> dict[str, Any]:
             "shadow_regime_initial_path": settings.shadow_regime_initial_path.value,
             "shadow_real_trade_policy": settings.shadow_real_trade_policy.value,
             "shadow_follow_min_price": settings.shadow_follow_min_price,
+            "shadow_follow_max_price": settings.shadow_follow_max_price,
             "shadow_enable_invert_branch": settings.shadow_enable_invert_branch,
             "shadow_invert_min_price": settings.shadow_invert_min_price,
             "shadow_invert_max_price": settings.shadow_invert_max_price,

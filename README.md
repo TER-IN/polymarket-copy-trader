@@ -69,6 +69,7 @@ Important `.env` values:
 - `SHADOW_REGIME_INITIAL_PATH`: real path before the first full window: `warmup` (default), `follow_shadow`, or `invert_shadow`.
 - `SHADOW_REAL_TRADE_POLICY`: `auto_regime` preserves the rolling follow/invert regime; `price_filter` only executes selected high-conviction shadow signals.
 - `SHADOW_FOLLOW_MIN_PRICE`: in `price_filter`, follow the shadow Up trade when its executable price is at least this value; default `0.70`.
+- `SHADOW_FOLLOW_MAX_PRICE`: optional exclusive upper bound for `price_filter` follow trades. When set with `SHADOW_FOLLOW_MIN_PRICE`, follow only when the shadow Up executable price is in `[min, max)`.
 - `SHADOW_ENABLE_INVERT_BRANCH`: in `price_filter`, keep the Down/invert branch available. Defaults to `true` for backward compatibility; set `false` to test high-Up-only trading.
 - `SHADOW_INVERT_MIN_PRICE` / `SHADOW_INVERT_MAX_PRICE`: in `price_filter`, invert to Down when its executable price is in this half-open range; defaults `0.40` to `0.45`.
 - `MAX_COPIED_BUYS_PER_WALLET_MARKET`: optional accepted BUY limit for each source wallet and condition.

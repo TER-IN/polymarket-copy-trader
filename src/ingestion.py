@@ -485,13 +485,25 @@ class PollingIngestor:
             return regime_path, "auto regime policy"
 
         shadow_price = shadow_decision.current_price
-        if shadow_price is not None and shadow_price >= self.settings.shadow_follow_min_price:
+        follow_max = self.settings.shadow_follow_max_price
+        if (
+            shadow_price is not None
+            and shadow_price >= self.settings.shadow_follow_min_price
+            and (follow_max is None or shadow_price < follow_max)
+        ):
+            follow_range = (
+                f">= {self.settings.shadow_follow_min_price:.4f}"
+                if follow_max is None
+                else (
+                    f"in [{self.settings.shadow_follow_min_price:.4f}, "
+                    f"{follow_max:.4f})"
+                )
+            )
             return (
                 ShadowRegimePath.FOLLOW,
                 (
                     "price filter selected follow_shadow: "
-                    f"shadow executable {shadow_price:.4f} >= "
-                    f"{self.settings.shadow_follow_min_price:.4f}"
+                    f"shadow executable {shadow_price:.4f} {follow_range}"
                 ),
             )
 
@@ -517,8 +529,8 @@ class PollingIngestor:
 
         reason = (
             "price filter skipped: "
-            f"shadow executable={_fmt_price(shadow_price)} "
-            f"requires >= {self.settings.shadow_follow_min_price:.4f}; "
+            f"shadow executable={_fmt_price(shadow_price)} requires "
+            f"{self._shadow_follow_price_requirement()}; "
         )
         if not opposite_decision.should_copy:
             reason += f"opposite rejected: {opposite_decision.reason}"
@@ -531,6 +543,15 @@ class PollingIngestor:
                 f"{self.settings.shadow_invert_max_price:.4f})"
             )
         return None, reason
+
+    def _shadow_follow_price_requirement(self) -> str:
+        follow_max = self.settings.shadow_follow_max_price
+        if follow_max is None:
+            return f">= {self.settings.shadow_follow_min_price:.4f}"
+        return (
+            f"[{self.settings.shadow_follow_min_price:.4f}, "
+            f"{follow_max:.4f})"
+        )
 
     def _process_shadow_regime_sell(
         self,
