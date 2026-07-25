@@ -102,6 +102,7 @@ class DecisionEngine:
             "side": trade.side.value,
             "strategy_config": {
                 "copy_ratio": self.settings.copy_ratio,
+                "process_newest_activity_first": self.settings.process_newest_activity_first,
                 "inverse_share_copy_ratio": self.settings.inverse_share_copy_ratio,
                 "inverse_down_max_source_price": self.settings.inverse_down_max_source_price,
                 "shadow_regime_window": self.settings.shadow_regime_window,

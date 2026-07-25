@@ -98,6 +98,8 @@ def summary() -> dict[str, Any]:
         "stop_trading": Path(settings.stop_trading_file).exists(),
         "settings": {
             "copy_ratio": settings.copy_ratio,
+            "poll_interval_seconds": settings.poll_interval_seconds,
+            "process_newest_activity_first": settings.process_newest_activity_first,
             "inverse_share_copy_ratio": settings.inverse_share_copy_ratio,
             "inverse_down_max_source_price": settings.inverse_down_max_source_price,
             "shadow_regime_window": settings.shadow_regime_window,

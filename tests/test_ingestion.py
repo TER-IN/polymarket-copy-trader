@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -33,6 +33,15 @@ class FakeDecisionEngine:
     def decide(self, trade, crowding_score=None):
         self.calls += 1
         raise AssertionError("seeded trades should not be decision-processed")
+
+
+class RecordingDecisionEngine:
+    def __init__(self):
+        self.transaction_hashes: list[str] = []
+
+    def decide(self, trade, crowding_score=None, source_trade=None):
+        self.transaction_hashes.append(source_trade.transaction_hash if source_trade else trade.transaction_hash)
+        return CopyDecision(False, "test rejection", details={})
 
 
 class FakeExecutor:
@@ -75,6 +84,44 @@ def test_first_poll_seeds_existing_trades_without_processing(tmp_path) -> None:
 
     assert len(db.recent_trades()) == 1
     assert decision_engine.calls == 0
+
+
+def test_poll_once_can_process_newest_activity_first(tmp_path) -> None:
+    old_trade = make_trade()
+    new_trade = TradeEvent(
+        **{
+            **make_trade().__dict__,
+            "transaction_hash": "0xnew",
+            "timestamp": datetime.now(timezone.utc),
+        }
+    )
+    old_trade = TradeEvent(
+        **{
+            **old_trade.__dict__,
+            "transaction_hash": "0xold",
+            "timestamp": new_trade.timestamp - timedelta(seconds=1),
+        }
+    )
+    settings = Settings(
+        target_wallets=["0xabc"],
+        seed_existing_trades_on_startup=False,
+        enable_crowding_check=False,
+        process_newest_activity_first=True,
+        outcome_selection_mode=OutcomeSelectionMode.SOURCE,
+    )
+    db = Database(tmp_path / "db.sqlite3")
+    decision_engine = RecordingDecisionEngine()
+    ingestor = PollingIngestor(
+        settings,
+        db,
+        FakeDataClient([old_trade, new_trade]),
+        decision_engine,
+        FakeExecutor(),
+    )
+
+    ingestor.poll_once()
+
+    assert decision_engine.transaction_hashes == ["0xnew", "0xold"]
 
 
 class FakeClob:
@@ -496,6 +543,27 @@ def test_shadow_price_filter_records_but_skips_unqualified_signal(tmp_path) -> N
         decision = conn.execute("SELECT reason, details FROM copy_decisions").fetchone()
     assert "price filter skipped" in decision["reason"]
     assert '"real_trade_policy": "price_filter"' in decision["details"]
+
+
+def test_shadow_price_filter_slippage_miss_does_not_freeze_market(tmp_path) -> None:
+    settings = shadow_regime_settings(
+        shadow_real_trade_policy="price_filter",
+        shadow_follow_min_price=0.60,
+        shadow_follow_max_price=0.65,
+        shadow_enable_invert_branch=False,
+        risk_mismatch_scope="wallet_market",
+    )
+    db = Database(tmp_path / "db.sqlite3")
+
+    assert shadow_regime_ingestor(settings, db, FakeClob({"up": 0.70, "down": 0.42})).process_trade(
+        shadow_source_trade("current", "0xcurrent")
+    )
+
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM shadow_orders").fetchone()[0] == 0
+        decision = conn.execute("SELECT reason FROM copy_decisions").fetchone()
+    assert "shadow rejected: slippage check failed" in decision["reason"]
+    assert db.get_source_token_state_for_trade(shadow_source_trade("current", "0xcurrent")) is None
 
 
 def test_shadow_regime_follows_shadow_after_winning_window(tmp_path) -> None:

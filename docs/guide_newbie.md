@@ -419,6 +419,8 @@ real execution and trade only selected price bands:
 - otherwise record the shadow and opposite quote, but place no real dry-run
   order.
 
+For latency-sensitive price-band tests, lower `POLL_INTERVAL_SECONDS` and set `PROCESS_NEWEST_ACTIVITY_FIRST=true`. Newest-first processing lets fresh source trades get quoted before older burst activity, while ordinary configs can keep the default oldest-first lifecycle order.
+
 The output reports resolved shadow markets, rolling wins and win rate, active
 path, desired path, pending path, confirmation progress, and switch count.
 

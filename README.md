@@ -53,6 +53,8 @@ Important `.env` values:
 - `TARGET_WALLETS`: comma-separated wallets to monitor.
 - `COPY_MODE`: `dry_run` or `live`.
 - `SEED_EXISTING_TRADES_ON_STARTUP`: mark already-visible wallet history as seen on monitor startup, then process only later trades.
+- `POLL_INTERVAL_SECONDS`: seconds between wallet activity fetches. Lower values reduce latency but increase API load.
+- `PROCESS_NEWEST_ACTIVITY_FIRST`: process newest fetched wallet activity before older activity. Useful for latency-sensitive shadow price-band tests; default `false`.
 - `TRADING_DAY_TIMEZONE`: timezone used for `Spend today`, daily spend caps, and the dashboard's local performance tab.
 - `SOURCE_POSITION_POLICY`: defaults to `skip_preexisting`; do not copy tokens the source already held before bot startup.
 - `SELL_SIZING_MODE`: defaults to `source_position_ratio`; copied sells reduce local exposure proportionally to the source's observed position reduction.

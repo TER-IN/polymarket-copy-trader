@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     target_wallets: list[str] = Field(default_factory=list, alias="TARGET_WALLETS")
     copy_mode: CopyMode = Field(default=CopyMode.DRY_RUN, alias="COPY_MODE")
     poll_interval_seconds: int = Field(default=10, alias="POLL_INTERVAL_SECONDS")
+    process_newest_activity_first: bool = Field(default=False, alias="PROCESS_NEWEST_ACTIVITY_FIRST")
     database_url: str = Field(default="sqlite:///polymarket_copy_trader.sqlite3", alias="DATABASE_URL")
     trading_day_timezone: str = Field(default="Europe/Prague", alias="TRADING_DAY_TIMEZONE")
     seed_existing_trades_on_startup: bool = Field(default=True, alias="SEED_EXISTING_TRADES_ON_STARTUP")
@@ -178,6 +179,8 @@ class Settings(BaseSettings):
     def validate_values(self) -> "Settings":
         if self.copy_ratio <= 0:
             raise ValueError("COPY_RATIO must be positive")
+        if self.poll_interval_seconds <= 0:
+            raise ValueError("POLL_INTERVAL_SECONDS must be positive")
         if self.copy_ratio > 1 and not self.allow_copy_ratio_gt_one:
             raise ValueError("COPY_RATIO > 1 requires ALLOW_COPY_RATIO_GT_ONE=true")
         if self.inverse_share_copy_ratio <= 0:

@@ -135,7 +135,11 @@ class PollingIngestor:
                 continue
             activity = [(item.timestamp, "trade", item) for item in trades]
             activity.extend((item.timestamp, "redemption", item) for item in redemptions)
-            for _timestamp, activity_type, item in sorted(activity, key=lambda entry: entry[0]):
+            for _timestamp, activity_type, item in sorted(
+                activity,
+                key=lambda entry: entry[0],
+                reverse=self.settings.process_newest_activity_first,
+            ):
                 if activity_type == "trade":
                     self.process_trade(item)
                 else:
@@ -283,7 +287,7 @@ class PollingIngestor:
                     shadow_decision.details,
                 )
                 logger.info("copy decision=False reason=%s", reason)
-                if _should_freeze_rejection(shadow_decision.reason):
+                if self._should_freeze_shadow_rejection(source_trade, shadow_decision.reason):
                     self.db.freeze_source_token_for_trade(
                         source_trade,
                         shadow_decision.reason,
@@ -664,6 +668,15 @@ class PollingIngestor:
             return False
         return True
 
+    def _should_freeze_shadow_rejection(self, source_trade: TradeEvent, reason: str) -> bool:
+        if (
+            self.settings.shadow_real_trade_policy == ShadowRealTradePolicy.PRICE_FILTER
+            and source_trade.side == TradeSide.BUY
+            and _is_transient_shadow_price_filter_rejection(reason)
+        ):
+            return False
+        return _should_freeze_rejection(reason)
+
 
 def _should_freeze_rejection(reason: str) -> bool:
     transient_prefixes = (
@@ -684,6 +697,15 @@ def _should_freeze_rejection(reason: str) -> bool:
         "Up/Down market duration",
     )
     return not reason.startswith(transient_prefixes)
+
+
+def _is_transient_shadow_price_filter_rejection(reason: str) -> bool:
+    transient_prefixes = (
+        "insufficient order-book depth within slippage/price limits",
+        "maximum buy price exceeded",
+        "slippage check failed",
+    )
+    return reason.startswith(transient_prefixes)
 
 
 def _fmt_price(value: float | None) -> str:
