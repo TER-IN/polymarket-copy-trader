@@ -36,6 +36,7 @@ uv run pct refresh-redemptions --wallet 0x...
 uv run pct refresh-resolutions
 uv run pct reconcile-settlements
 uv run pct backfill-wallet --wallet 0x... --days 7
+uv run pct analyze-perp-signals --tradingview-csv path/to/MEXC_BTCUSDT.P_45s.csv
 uv run pct reset-simulation --i-understand-this-deletes-local-simulation
 ```
 
@@ -177,5 +178,11 @@ uv run pct reconcile-settlements --apply --i-understand-this-updates-local-accou
 Stop any older bot process before applying reconciliation so it cannot add more legacy settlement rows.
 
 See `docs/architecture.md` for the module map.
+
+For isolated BTC perpetual direction research using filled dry-run signals and
+10-second or 45-second TradingView exports, see
+[docs/perp_signal_research.md](docs/perp_signal_research.md). The analysis opens
+the bot database read-only, does not read `.env`, and writes results separately
+under `research/perp-signals/`.
 
 For dry-run research, public Data API trades may arrive a few minutes after their trade timestamp. If you see useful trades skipped as "trade too old", consider `MAX_TRADE_AGE_SECONDS=300` or `600`. For live trading, keep this conservative.

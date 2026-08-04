@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from datetime import timedelta, timezone
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -18,6 +20,13 @@ from ingestion import PollingIngestor
 from models import CopyMode, utc_now
 from models import TradeSide
 from outcome_selection import OutcomeSelector
+from perp_signal_analysis import (
+    analyze_signals,
+    build_summary,
+    load_filled_btc_signals,
+    load_tradingview_csvs,
+    write_analysis_outputs,
+)
 from polymarket_clob import PublicClobClient
 from polymarket_data import PolymarketDataClient
 from polymarket_gamma import GammaClient
@@ -586,6 +595,122 @@ def refresh_resolutions() -> None:
     db = Database(settings.sqlite_path())
     settled = ResolutionScanner(settings, db, GammaClient(settings.gamma_api_base_url)).scan_once()
     console.print(f"Resolution scanner settled {settled} copied positions.")
+
+
+@app.command("analyze-perp-signals")
+def analyze_perp_signals(
+    source_db: Path = typer.Option(
+        Path("polymarket_copy_trader_202607251157.sqlite3"),
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="Bot SQLite database; it is opened strictly read-only.",
+    ),
+    tradingview_csv: list[Path] | None = typer.Option(
+        None,
+        "--tradingview-csv",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="TradingView CSV export; repeat this option for overlapping archives.",
+    ),
+    tradingview_csv_dir: Path | None = typer.Option(
+        None,
+        exists=True,
+        file_okay=False,
+        readable=True,
+        help="Directory containing TradingView CSV exports.",
+    ),
+    symbol: str = typer.Option("MEXC:BTCUSDT.P", help="Chart symbol recorded in the report."),
+    round_trip_cost_bps: float | None = typer.Option(
+        None,
+        min=0.0,
+        help="Combined costs in bps; defaults to two taker fees (4 bps).",
+    ),
+    perp_margin_usd: float = typer.Option(
+        100.0, min=0.01, help="Margin assigned to each hypothetical perp trade."
+    ),
+    perp_leverage: float = typer.Option(
+        100.0, min=0.01, help="Leverage for hypothetical endpoint PnL."
+    ),
+    taker_fee_percent: float = typer.Option(
+        0.02, min=0.0, help="Taker fee percentage charged on each market fill."
+    ),
+    output_dir: Path | None = typer.Option(
+        None,
+        help="New output directory. Defaults to a timestamped research/perp-signals directory.",
+    ),
+) -> None:
+    """Compare filled BTC Up/Down dry-run signals with TradingView perp candles."""
+    signals = load_filled_btc_signals(source_db)
+    if not signals:
+        raise typer.BadParameter("the source database contains no qualifying filled BTC BUY signals")
+    required_start = min(signal.execution_time for signal in signals)
+    required_end = max(signal.market_end_time for signal in signals)
+    console.print(
+        f"Found {len(signals)} filled BTC BUY signals. Required UTC coverage: "
+        f"{required_start.isoformat()} through {required_end.isoformat()}."
+    )
+
+    csv_paths = list(tradingview_csv or [])
+    if tradingview_csv_dir is not None:
+        csv_paths.extend(sorted(tradingview_csv_dir.glob("*.csv")))
+    if not csv_paths:
+        entered = typer.prompt("Path to a TradingView CSV export (10-second or 45-second)")
+        csv_paths.append(Path(entered).expanduser())
+
+    candles, imported = load_tradingview_csvs(csv_paths)
+    if imported.interval_seconds > 45.5:
+        raise typer.BadParameter(
+            f"detected a {imported.interval_seconds:g}-second interval; "
+            "this study supports TradingView exports up to 45 seconds"
+        )
+    effective_round_trip_cost_bps = (
+        round_trip_cost_bps
+        if round_trip_cost_bps is not None
+        else taker_fee_percent * 2 * 100
+    )
+    matched, excluded = analyze_signals(
+        signals,
+        candles,
+        imported.interval_seconds,
+        round_trip_cost_bps=effective_round_trip_cost_bps,
+        perp_margin_usd=perp_margin_usd,
+        perp_leverage=perp_leverage,
+        taker_fee_percent=taker_fee_percent,
+    )
+    summary = build_summary(
+        signals, matched, excluded, round_trip_cost_bps=effective_round_trip_cost_bps
+    )
+    destination = output_dir or Path("research/perp-signals") / datetime.now().strftime(
+        "%Y%m%d-%H%M%S"
+    )
+    configuration = {
+        "source_database": str(source_db.resolve()),
+        "source_database_access": "read_only",
+        "symbol": symbol,
+        "entry_price_rule": "open of first candle timestamp at or after copied_orders.recorded_at",
+        "end_price_rule": "open of first candle timestamp at or after decision market_end_time",
+        "signal_filter": "filled dry_run BTC Up/Down BUY orders",
+        "round_trip_cost_bps": effective_round_trip_cost_bps,
+        "perp_margin_usd": perp_margin_usd,
+        "perp_leverage": perp_leverage,
+        "perp_notional_usd": perp_margin_usd * perp_leverage,
+        "order_type": "market",
+        "maker_fee_percent": 0.0,
+        "taker_fee_percent_per_fill": taker_fee_percent,
+        "slippage_percent": 0.0,
+        "pnl_liquidation_model": "not modeled; endpoint PnL only",
+        "chronological_split": "first 70% training, final 30% holdout",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    write_analysis_outputs(destination, configuration, imported, matched, excluded, summary)
+    accuracy = summary["directional_accuracy_percent"]
+    console.print(
+        f"Matched {len(matched)} signals; excluded {len(excluded)}. "
+        + ("No directional accuracy available." if accuracy is None else f"Accuracy={accuracy:.2f}%.")
+    )
+    console.print(f"Report written to {destination / 'report.md'}")
 
 
 @app.command("dashboard")

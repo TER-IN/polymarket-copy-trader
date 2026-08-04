@@ -9,3 +9,5 @@ __pycache__/
 *.egg-info/
 STOP_TRADING
 tmp/
+research/perp-signals/*
+!research/perp-signals/.gitkeep

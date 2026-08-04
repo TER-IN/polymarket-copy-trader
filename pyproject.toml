@@ -45,6 +45,7 @@ py-modules = [
   "execution",
   "funds",
   "positions",
+  "perp_signal_analysis",
   "redemption",
   "resolution",
   "settlement_audit",

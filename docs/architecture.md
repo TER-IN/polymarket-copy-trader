@@ -25,6 +25,7 @@ This project is dry-run first. Public Polymarket data is used for monitoring, CL
 18. `copy_decisions` stores the exact decision-time risk snapshot used by Source States.
 19. `SettlementAuditor` previews or applies authoritative corrections to legacy condition-level source-redemption settlements.
 20. `shadow_orders` stores one executable paper-only Up order per source wallet and market. `shadow_regime.py` deterministically replays resolved shadow outcomes to derive warm-up, active path, and pending switch confirmation across restarts.
+21. `perp_signal_analysis.py` is an offline research boundary. It opens a selected bot SQLite database in read-only/query-only mode, matches filled BTC Up/Down dry-run BUYs to normalized TradingView candles, and writes reports outside bot state. It does not build the live/dry-run execution stack or read `.env`.
 
 ## Live Trading Boundary
 
